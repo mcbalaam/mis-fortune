@@ -20,7 +20,7 @@ export type UserPreferences = {
   useUserColors: boolean;
   showBots: boolean;
   hideCommands: boolean;
-  hideBadges: boolean;
+  showBadges: boolean;
 };
 
 export const DEFAULT_PREFS: UserPreferences = {
@@ -36,7 +36,7 @@ export const DEFAULT_PREFS: UserPreferences = {
   useUserColors: false,
   showBots: true,
   hideCommands: false,
-  hideBadges: false,
+  showBadges: true,
 } as const;
 
 export function createPreferences(

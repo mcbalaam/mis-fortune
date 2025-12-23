@@ -1,6 +1,7 @@
 import { ofetch } from "ofetch";
 import Emote from "./Emote";
 import type { UserPreferences } from "./UserPreferences";
+import parseIRC from "./IRCMessage";
 
 const BOTUSERNAMES = [
   "streamelements",
@@ -10,16 +11,265 @@ const BOTUSERNAMES = [
   "fossabot",
 ];
 
+interface EmoteReplacement {
+  code: string;
+  emote: Emote;
+}
+
+interface CheerInfo {
+  image: string;
+  color: string;
+  bits: number;
+}
+
+interface FFZUserBadges {
+  badges?: Record<
+    string,
+    {
+      title: string;
+      urls: Record<string, string>;
+      color?: string;
+    }
+  >;
+}
+
+interface FfzapUser {
+  id: string;
+  tier: number;
+  badge_color?: string;
+  badge_is_colored?: number;
+}
+
+interface BTTVBadgeUser {
+  name: string;
+  badge: {
+    description: string;
+    svg: string;
+  };
+}
+
+interface SevBadge {
+  tooltip: string;
+  urls: string[][];
+  users: string[];
+}
+
+interface ChatterinoBadge {
+  tooltip: string;
+  image1?: string;
+  image2?: string;
+  image3?: string;
+  users: string[];
+}
+
+class ChatMessage {
+  id: string;
+  nick: string;
+  displayName: string;
+  color: string;
+  badges: Badge[];
+  message: string;
+  rawMessage: string;
+  timestamp: number;
+  twitchEmotes: string[];
+  thirdPartyEmotes: EmoteReplacement[];
+  cheer?: CheerInfo;
+  isAction: boolean;
+  bits?: number;
+
+  constructor(data: {
+    id: string;
+    nick: string;
+    displayName: string;
+    color: string;
+    badges: Badge[];
+    message: string;
+    rawMessage: string;
+    timestamp: number;
+    twitchEmotes: string[];
+    thirdPartyEmotes: EmoteReplacement[];
+    cheer?: CheerInfo;
+    isAction: boolean;
+    bits?: number;
+  }) {
+    this.id = data.id;
+    this.nick = data.nick;
+    this.displayName = data.displayName;
+    this.color = data.color;
+    this.badges = data.badges;
+    this.message = data.message;
+    this.rawMessage = data.rawMessage;
+    this.timestamp = data.timestamp;
+    this.twitchEmotes = data.twitchEmotes;
+    this.thirdPartyEmotes = data.thirdPartyEmotes;
+    this.cheer = data.cheer;
+    this.isAction = data.isAction;
+    this.bits = data.bits;
+  }
+}
+
 class ChatInstance {
   targetChannelUsername: string;
+  targetChannelID: string = "0";
   emotes: Record<string, Emote> = {};
-  badges: Record<string, any> = {};
-  userBadges: Record<string, any> = {};
-  seventvBadges: null = null;
-  cheers: Record<string, any> = {};
-  lines: any[] = [];
+  badges: Record<string, string> = {};
+  chatterinoBadges: ChatterinoBadge[] = [];
+  ffzapBadges: FfzapUser[] = [];
+  bttvBadges: BTTVBadgeUser[] = [];
+  userBadges: Record<string, Badge[]> = {};
+  seventvBadges: SevBadge[] | null = null;
+  cheers: Record<string, Record<number, CheerInfo>> = {};
+  messages: ChatMessage[] = [];
   blockedUsers: string[] = [];
   prefs: UserPreferences;
+  private loadingUserBadges: Set<string> = new Set();
+
+  write(nick: string, info: any, message: string): void {
+    if (
+      BOTUSERNAMES.includes(nick.toLowerCase()) &&
+      this.blockedUsers.includes(nick.toLowerCase())
+    ) {
+      return;
+    }
+
+    const timestamp = Date.now();
+    const isAction = /^\x01ACTION.*\x01$/.test(message);
+    const rawMessage = message;
+    const cleanMessage = isAction
+      ? message
+          .replace(/^\x01ACTION/, "")
+          .replace(/\x01$/, "")
+          .trim()
+      : message;
+
+    const badges: Badge[] = [];
+    const priorityBadges = [
+      "predictions",
+      "admin",
+      "global_mod",
+      "staff",
+      "twitchbot",
+      "broadcaster",
+      "moderator",
+      "vip",
+    ];
+
+    if (info.badges && typeof info.badges === "string") {
+      info.badges.split(",").forEach((badgeStr) => {
+        const [type, version] = badgeStr.split("/");
+        const badgeUrl = this.badges[`${type}:${version}`];
+        if (badgeUrl) {
+          badges.push({
+            description: type,
+            url: badgeUrl,
+            priority: priorityBadges.includes(type),
+          });
+        }
+      });
+    }
+
+    if (this.userBadges[nick]) {
+      this.userBadges[nick].forEach((userBadge) => {
+        badges.push({
+          ...userBadge,
+          priority: priorityBadges.includes(userBadge.description),
+        });
+      });
+    }
+
+    const priorityBadgesList = badges.filter((b) => b.priority);
+    const regularBadgesList = badges.filter((b) => !b.priority);
+    const sortedBadges = [...priorityBadgesList, ...regularBadgesList];
+
+    let color: string;
+    if (typeof info.color === "string" && info.color) {
+      const tc = (window as any).tinycolor(info.color);
+      color = tc.getBrightness() <= 50 ? tc.lighten(30).toString() : info.color;
+    } else {
+      const twitchColors = [
+        "#FF0000",
+        "#0000FF",
+        "#008000",
+        "#B22222",
+        "#FF7F50",
+        "#9ACD32",
+        "#FF4500",
+        "#2E8B57",
+        "#DAA520",
+        "#D2691E",
+        "#5F9EA0",
+        "#1E90FF",
+        "#FF69B4",
+        "#8A2BE2",
+        "#00FF7F",
+      ];
+      color = twitchColors[nick.charCodeAt(0) % 15];
+    }
+
+    const twitchEmotes: string[] = [];
+    if (info.emotes && typeof info.emotes === "string") {
+      info.emotes.split("/").forEach((emoteData) => {
+        const [emoteId] = emoteData.split(":");
+        twitchEmotes.push(emoteId);
+      });
+    }
+
+    const thirdPartyEmotes: EmoteReplacement[] = [];
+    Object.entries(this.emotes).forEach(([code, emote]) => {
+      if (cleanMessage.search(new RegExp(escapeRegExp(code), "i")) > -1) {
+        thirdPartyEmotes.push({ code, emote });
+      }
+    });
+
+    let cheer: CheerInfo | undefined;
+    let bits: number | undefined;
+    if (info.bits && parseInt(info.bits) > 0) {
+      bits = parseInt(info.bits);
+      for (const [prefix, tiers] of Object.entries(this.cheers)) {
+        const regex = new RegExp(`${escapeRegExp(prefix)}\\d+\\s*`, "i");
+        if (regex.test(cleanMessage)) {
+          const tierKeys = Object.keys(tiers)
+            .map(Number)
+            .sort((a, b) => a - b);
+          let closestTier = 1;
+          for (const tier of tierKeys) {
+            if (bits! >= tier) closestTier = tier;
+            else break;
+          }
+          cheer = tiers[closestTier];
+          break;
+        }
+      }
+    }
+
+    const chatMessage = new ChatMessage({
+      id: info.id || `${nick}_${timestamp}`,
+      nick,
+      displayName: info["display-name"] || nick,
+      color,
+      badges: sortedBadges,
+      message: cleanMessage,
+      rawMessage,
+      timestamp,
+      twitchEmotes,
+      thirdPartyEmotes,
+      cheer,
+      isAction,
+      bits,
+    });
+
+    this.messages.push(chatMessage);
+  }
+
+  clearChat(nick: string): void {
+    this.messages = this.messages.filter(
+      (msg) => msg.nick.toLowerCase() !== nick.toLowerCase(),
+    );
+  }
+
+  clearMessage(id: string): void {
+    this.messages = this.messages.filter((msg) => msg.id !== id);
+  }
 
   async fetchEmotes() {
     this.emotes = {};
@@ -108,10 +358,250 @@ class ChatInstance {
     }
   }
 
-  constructor(channelUsername: string, setPrefs: UserPreferences) {
-    this.prefs = setPrefs;
+  private async doAPIRequest(endpoint: string): Promise<any> {
+    const headers = {
+      "Client-ID": "YOUR_TWITCH_CLIENT_ID",
+      Accept: "application/vnd.twitchtv.v5+json",
+    };
+
+    try {
+      return await ofetch(endpoint, { headers });
+    } catch (error) {
+      console.warn(`Twitch API failed for ${endpoint}:`, error);
+      throw error;
+    }
+  }
+
+  async init() {
+    try {
+      const userRes = await this.doAPIRequest(
+        `https://api.twitch.tv/v5/users?login=${encodeURIComponent(this.targetChannelUsername)}`,
+      );
+      const channelID = userRes.users[0]._id;
+      this.targetChannelID = channelID;
+      await this.fetchEmotes();
+
+      if (this.prefs.showBadges) {
+        const globalBadges = await this.doAPIRequest(
+          "https://badges.twitch.tv/v1/badges/global/display",
+        );
+        Object.entries(globalBadges.badge_sets).forEach((badge: any) => {
+          Object.entries(badge[1].versions).forEach((v: any) => {
+            this.badges[badge[0] + ":" + v[0]] = v[1].image_url_4x;
+          });
+        });
+
+        const channelBadges = await this.doAPIRequest(
+          `https://badges.twitch.tv/v1/badges/channels/${encodeURIComponent(this.targetChannelID!)}/display`,
+        );
+        Object.entries(channelBadges.badge_sets).forEach((badge: any) => {
+          Object.entries(badge[1].versions).forEach((v: any) => {
+            this.badges[badge[0] + ":" + v[0]] = v[1].image_url_4x;
+          });
+        });
+
+        // FrankerFaceZ room badges
+        try {
+          const ffzRoom = await ofetch(
+            `https://api.frankerfacez.com/v1/_room/id/${encodeURIComponent(this.targetChannelID!)}`,
+          );
+          if (ffzRoom.room.moderator_badge) {
+            this.badges["moderator:1"] =
+              `https://cdn.frankerfacez.com/room-badge/mod/${this.targetChannelUsername}/4/rounded`;
+          }
+          if (ffzRoom.room.vip_badge) {
+            this.badges["vip:1"] =
+              `https://cdn.frankerfacez.com/room-badge/vip/${this.targetChannelUsername}/4`;
+          }
+        } catch (error) {
+          console.warn("FFZ room badges fetch failed:", error);
+        }
+
+        // Additional badge services
+        try {
+          this.ffzapBadges = await ofetch(
+            "https://api.ffzap.com/v1/supporters",
+          );
+        } catch {
+          this.ffzapBadges = [];
+        }
+
+        try {
+          this.bttvBadges = await ofetch(
+            "https://api.betterttv.net/3/cached/badges",
+          );
+        } catch {
+          this.bttvBadges = [];
+        }
+
+        try {
+          const sevRes = await ofetch(
+            "https://api.7tv.app/v2/badges?user_identifier=login",
+          );
+          this.seventvBadges = sevRes.badges;
+          this.seventvBadges = sevRes.badges;
+        } catch {
+          this.seventvBadges = [];
+          this.seventvBadges = [];
+        }
+
+        try {
+          const chatterinoRes = await ofetch(
+            "https://api.chatterino.com/badges",
+          );
+          this.chatterinoBadges = chatterinoRes.badges;
+        } catch {
+          this.chatterinoBadges = [];
+        }
+      }
+
+      // Load cheers
+      try {
+        const cheersRes = await this.doAPIRequest(
+          `https://api.twitch.tv/v5/bits/actions?channel_id=${this.targetChannelID}`,
+        );
+        cheersRes.actions.forEach((action: any) => {
+          this.cheers[action.prefix] = {};
+          action.tiers.forEach((tier: any) => {
+            this.cheers[action.prefix][tier.min_bits] = {
+              image: tier.images.dark.animated["4"],
+              color: tier.color,
+            };
+          });
+        });
+        this.cheers = this.cheers;
+      } catch (error) {
+        console.warn("Cheers fetch failed:", error);
+      }
+    } catch (error) {
+      console.error("Chat load failed:", error);
+    }
+  }
+
+  runSocketConnection() {
+    console.log("jChat: Connecting to IRC server...");
+
+    const socket = new WebSocket("wss://irc-ws.chat.twitch.tv", "irc");
+
+    socket.onopen = () => {
+      console.log("mis-fortune: socket connection established");
+      socket.send("PASS blah\\r\\n");
+      socket.send(`NICK justinfan${Math.floor(Math.random() * 99999)}\\r\\n`);
+      socket.send("CAP REQ :twitch.tv/commands twitch.tv/tags\\r\\n");
+      socket.send(`JOIN #${this.targetChannelUsername}\\r\\n`);
+    };
+
+    socket.onclose = () => {
+      console.log("mis-fortune: disconnected");
+      // Implement reconnection logic here if not using a ReconnectingWebSocket library
+    };
+
+    socket.onerror = (error) => {
+      console.error("mis-fortune: WebSocket error:", error);
+    };
+
+    socket.onmessage = (event: MessageEvent) => {
+      (event.data as string).split("\\r\\n").forEach((line) => {
+        if (!line) return;
+        const message = parseIRC(line);
+        if (!message || !message.command) return;
+
+        switch (message.command) {
+          case "PING":
+            socket.send(`PONG ${message.params[0]}`);
+            return;
+          case "JOIN":
+            console.log(
+              `mis-fortune: channel #${this.targetChannelUsername} joined`,
+            );
+            return;
+          case "CLEARMSG":
+            if (
+              message.tags &&
+              message.tags["target-msg-id"] &&
+              typeof message.tags["target-msg-id"] === "string"
+            )
+              this.clearMessage(message.tags["target-msg-id"]);
+            return;
+          case "CLEARCHAT":
+            if (message.params[1]) this.clearChat(message.params[1]);
+            return;
+          case "PRIVMSG":
+            if (
+              message.params[0] !== `#${this.targetChannelUsername}` ||
+              !message.params[1]
+            )
+              return;
+            const nick = message.prefix?.split("@")[0].split("!")[0];
+            if (!nick) return;
+
+            if (
+              message.params[1].toLowerCase() === "!refreshoverlay" &&
+              message.tags.badges &&
+              typeof message.tags.badges === "string"
+            ) {
+              let flag = false;
+              message.tags.badges.split(",").forEach((badge) => {
+                const badgeParts = badge.split("/");
+                if (
+                  badgeParts[0] === "moderator" ||
+                  badgeParts[0] === "broadcaster"
+                ) {
+                  flag = true;
+                }
+              });
+              if (flag) {
+                this.fetchEmotes();
+                console.log("mis-fortune: refreshing emotes now...");
+                return;
+              }
+            }
+
+            if (this.prefs.hideCommands) {
+              if (/^!.+/.test(message.params[1])) return;
+            }
+
+            if (!this.prefs.showBots) {
+              if (BOTUSERNAMES.includes(nick)) return;
+            }
+
+            if (this.blockedUsers) {
+              if (this.blockedUsers.includes(nick)) return;
+            }
+
+            if (this.prefs.showBadges) {
+              if (
+                this.bttvBadges &&
+                this.seventvBadges &&
+                this.chatterinoBadges &&
+                this.ffzapBadges &&
+                !this.userBadges[nick]
+              ) {
+                // Tags are Record<string, string | true>, so ensure user-id is a string
+                if (
+                  message.tags["user-id"] &&
+                  typeof message.tags["user-id"] === "string"
+                ) {
+                  this.loadUserBadges(nick, message.tags["user-id"]);
+                }
+              }
+            }
+
+            this.write(nick, message.tags || {}, message.params[1]);
+            return;
+        }
+      });
+    };
+  }
+
+  constructor(channelUsername: string, prefs: UserPreferences) {
+    this.prefs = prefs;
     this.targetChannelUsername = channelUsername;
   }
+}
+
+function escapeRegExp(string: string): string {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export default ChatInstance;
