@@ -1,6 +1,11 @@
 import { ofetch } from "ofetch";
 import Emote from "./Emote";
+import type { EmoteReplacement } from "./Emote";
 import type { UserPreferences } from "./UserPreferences";
+import { ChatMessage } from "./ChatMessage";
+import type { CheerInfo } from "./ChatMessage";
+import type { Badge } from "./Badge";
+import Badger from "./Badge";
 import parseIRC from "./IRCMessage";
 
 const BOTUSERNAMES = [
@@ -11,118 +16,27 @@ const BOTUSERNAMES = [
   "fossabot",
 ];
 
-interface EmoteReplacement {
-  code: string;
-  emote: Emote;
-}
-
-interface CheerInfo {
-  image: string;
-  color: string;
-  bits: number;
-}
-
-interface FFZUserBadges {
-  badges?: Record<
-    string,
-    {
-      title: string;
-      urls: Record<string, string>;
-      color?: string;
-    }
-  >;
-}
-
-interface FfzapUser {
-  id: string;
-  tier: number;
-  badge_color?: string;
-  badge_is_colored?: number;
-}
-
-interface BTTVBadgeUser {
-  name: string;
-  badge: {
-    description: string;
-    svg: string;
-  };
-}
-
-interface SevBadge {
-  tooltip: string;
-  urls: string[][];
-  users: string[];
-}
-
-interface ChatterinoBadge {
-  tooltip: string;
-  image1?: string;
-  image2?: string;
-  image3?: string;
-  users: string[];
-}
-
-class ChatMessage {
-  id: string;
-  nick: string;
-  displayName: string;
-  color: string;
-  badges: Badge[];
-  message: string;
-  rawMessage: string;
-  timestamp: number;
-  twitchEmotes: string[];
-  thirdPartyEmotes: EmoteReplacement[];
-  cheer?: CheerInfo;
-  isAction: boolean;
-  bits?: number;
-
-  constructor(data: {
-    id: string;
-    nick: string;
-    displayName: string;
-    color: string;
-    badges: Badge[];
-    message: string;
-    rawMessage: string;
-    timestamp: number;
-    twitchEmotes: string[];
-    thirdPartyEmotes: EmoteReplacement[];
-    cheer?: CheerInfo;
-    isAction: boolean;
-    bits?: number;
-  }) {
-    this.id = data.id;
-    this.nick = data.nick;
-    this.displayName = data.displayName;
-    this.color = data.color;
-    this.badges = data.badges;
-    this.message = data.message;
-    this.rawMessage = data.rawMessage;
-    this.timestamp = data.timestamp;
-    this.twitchEmotes = data.twitchEmotes;
-    this.thirdPartyEmotes = data.thirdPartyEmotes;
-    this.cheer = data.cheer;
-    this.isAction = data.isAction;
-    this.bits = data.bits;
-  }
-}
-
 class ChatInstance {
   targetChannelUsername: string;
   targetChannelID: string = "0";
   emotes: Record<string, Emote> = {};
-  badges: Record<string, string> = {};
-  chatterinoBadges: ChatterinoBadge[] = [];
-  ffzapBadges: FfzapUser[] = [];
-  bttvBadges: BTTVBadgeUser[] = [];
-  userBadges: Record<string, Badge[]> = {};
-  seventvBadges: SevBadge[] | null = null;
   cheers: Record<string, Record<number, CheerInfo>> = {};
   messages: ChatMessage[] = [];
   blockedUsers: string[] = [];
   prefs: UserPreferences;
+  badger: Badger;
+
+  // кешируем системные бейджи на инстансе чата
+  badges: Record<string, string> = {};
+
+  // чтобы не дёргать бейджера по одному пользователю многократно
   private loadingUserBadges: Set<string> = new Set();
+
+  constructor(channelUsername: string, prefs: UserPreferences) {
+    this.prefs = prefs;
+    this.targetChannelUsername = channelUsername;
+    this.badger = new Badger();
+  }
 
   write(nick: string, info: any, message: string): void {
     if (
@@ -154,11 +68,12 @@ class ChatInstance {
       "vip",
     ];
 
+    // твич‑бейджи из tags.badges
     if (info.badges && typeof info.badges === "string") {
-      info.badges.split(",").forEach((badgeStr) => {
+      info.badges.split(",").forEach((badgeStr: string) => {
         const [type, version] = badgeStr.split("/");
         const badgeUrl = this.badges[`${type}:${version}`];
-        if (badgeUrl) {
+        if (badgeUrl && type) {
           badges.push({
             description: type,
             url: badgeUrl,
@@ -168,14 +83,14 @@ class ChatInstance {
       });
     }
 
-    if (this.userBadges[nick]) {
-      this.userBadges[nick].forEach((userBadge) => {
-        badges.push({
-          ...userBadge,
-          priority: priorityBadges.includes(userBadge.description),
-        });
+    // все остальные бейджи
+    const userBadges = this.badger.getUserBadges(nick);
+    userBadges.forEach((userBadge) => {
+      badges.push({
+        ...userBadge,
+        priority: priorityBadges.includes(userBadge.description),
       });
-    }
+    });
 
     const priorityBadgesList = badges.filter((b) => b.priority);
     const regularBadgesList = badges.filter((b) => !b.priority);
@@ -203,13 +118,14 @@ class ChatInstance {
         "#8A2BE2",
         "#00FF7F",
       ];
-      color = twitchColors[nick.charCodeAt(0) % 15];
+      color = twitchColors[nick.charCodeAt(0) % 15] || "#FF4500";
     }
 
     const twitchEmotes: string[] = [];
     if (info.emotes && typeof info.emotes === "string") {
-      info.emotes.split("/").forEach((emoteData) => {
+      info.emotes.split("/").forEach((emoteData: string) => {
         const [emoteId] = emoteData.split(":");
+        if (!emoteId) return;
         twitchEmotes.push(emoteId);
       });
     }
@@ -379,8 +295,10 @@ class ChatInstance {
       );
       const channelID = userRes.users[0]._id;
       this.targetChannelID = channelID;
+
       await this.fetchEmotes();
 
+      // Загружаем twitch‑бейджи (глобальные + канал)
       if (this.prefs.showBadges) {
         const globalBadges = await this.doAPIRequest(
           "https://badges.twitch.tv/v1/badges/global/display",
@@ -400,7 +318,7 @@ class ChatInstance {
           });
         });
 
-        // FrankerFaceZ room badges
+        // FrankerFaceZ room badges (модератор/вип override)
         try {
           const ffzRoom = await ofetch(
             `https://api.frankerfacez.com/v1/_room/id/${encodeURIComponent(this.targetChannelID!)}`,
@@ -417,59 +335,31 @@ class ChatInstance {
           console.warn("FFZ room badges fetch failed:", error);
         }
 
-        // Additional badge services
-        try {
-          this.ffzapBadges = await ofetch(
-            "https://api.ffzap.com/v1/supporters",
-          );
-        } catch {
-          this.ffzapBadges = [];
-        }
-
-        try {
-          this.bttvBadges = await ofetch(
-            "https://api.betterttv.net/3/cached/badges",
-          );
-        } catch {
-          this.bttvBadges = [];
-        }
-
-        try {
-          const sevRes = await ofetch(
-            "https://api.7tv.app/v2/badges?user_identifier=login",
-          );
-          this.seventvBadges = sevRes.badges;
-          this.seventvBadges = sevRes.badges;
-        } catch {
-          this.seventvBadges = [];
-          this.seventvBadges = [];
-        }
-
-        try {
-          const chatterinoRes = await ofetch(
-            "https://api.chatterino.com/badges",
-          );
-          this.chatterinoBadges = chatterinoRes.badges;
-        } catch {
-          this.chatterinoBadges = [];
-        }
+        // грузим глобальные бейджи в бэйджере
+        await this.badger.loadGlobalBadges();
       }
 
+      // Load cheers
       // Load cheers
       try {
         const cheersRes = await this.doAPIRequest(
           `https://api.twitch.tv/v5/bits/actions?channel_id=${this.targetChannelID}`,
         );
         cheersRes.actions.forEach((action: any) => {
+          if (!action.prefix) return;
           this.cheers[action.prefix] = {};
-          action.tiers.forEach((tier: any) => {
-            this.cheers[action.prefix][tier.min_bits] = {
-              image: tier.images.dark.animated["4"],
-              color: tier.color,
-            };
+          action.tiers?.forEach((tier: any) => {
+            const minBits = tier.min_bits;
+            const image = tier.images?.dark?.animated?.["4"];
+
+            if (minBits && image) {
+              this.cheers[action.prefix][minBits] = {
+                image,
+                color: tier.color || "#9146FF",
+              };
+            }
           });
         });
-        this.cheers = this.cheers;
       } catch (error) {
         console.warn("Cheers fetch failed:", error);
       }
@@ -485,15 +375,14 @@ class ChatInstance {
 
     socket.onopen = () => {
       console.log("mis-fortune: socket connection established");
-      socket.send("PASS blah\\r\\n");
-      socket.send(`NICK justinfan${Math.floor(Math.random() * 99999)}\\r\\n`);
-      socket.send("CAP REQ :twitch.tv/commands twitch.tv/tags\\r\\n");
-      socket.send(`JOIN #${this.targetChannelUsername}\\r\\n`);
+      socket.send("PASS blah\r\n");
+      socket.send(`NICK justinfan${Math.floor(Math.random() * 99999)}\r\n`);
+      socket.send("CAP REQ :twitch.tv/commands twitch.tv/tags\r\n");
+      socket.send(`JOIN #${this.targetChannelUsername}\r\n`);
     };
 
     socket.onclose = () => {
       console.log("mis-fortune: disconnected");
-      // Implement reconnection logic here if not using a ReconnectingWebSocket library
     };
 
     socket.onerror = (error) => {
@@ -501,7 +390,7 @@ class ChatInstance {
     };
 
     socket.onmessage = (event: MessageEvent) => {
-      (event.data as string).split("\\r\\n").forEach((line) => {
+      (event.data as string).split("\r\n").forEach((line) => {
         if (!line) return;
         const message = parseIRC(line);
         if (!message || !message.command) return;
@@ -569,21 +458,30 @@ class ChatInstance {
               if (this.blockedUsers.includes(nick)) return;
             }
 
+            // Загрузка пользовательских бейджей через Badger
             if (this.prefs.showBadges) {
+              const cacheKey = nick.toLowerCase();
+              const hasBadges = this.badger.hasBadges(cacheKey);
+              const isLoading = this.loadingUserBadges.has(cacheKey);
+
               if (
-                this.bttvBadges &&
-                this.seventvBadges &&
-                this.chatterinoBadges &&
-                this.ffzapBadges &&
-                !this.userBadges[nick]
+                !hasBadges &&
+                !isLoading &&
+                message.tags["user-id"] &&
+                typeof message.tags["user-id"] === "string"
               ) {
-                // Tags are Record<string, string | true>, so ensure user-id is a string
-                if (
-                  message.tags["user-id"] &&
-                  typeof message.tags["user-id"] === "string"
-                ) {
-                  this.loadUserBadges(nick, message.tags["user-id"]);
-                }
+                this.loadingUserBadges.add(cacheKey);
+                this.badger
+                  .loadUserBadges(nick, message.tags["user-id"])
+                  .catch((err) =>
+                    console.warn(
+                      `Failed to load user badges for ${nick}:`,
+                      err,
+                    ),
+                  )
+                  .finally(() => {
+                    this.loadingUserBadges.delete(cacheKey);
+                  });
               }
             }
 
@@ -592,11 +490,6 @@ class ChatInstance {
         }
       });
     };
-  }
-
-  constructor(channelUsername: string, prefs: UserPreferences) {
-    this.prefs = prefs;
-    this.targetChannelUsername = channelUsername;
   }
 }
 

@@ -17,4 +17,9 @@ class Emote {
   }
 }
 
+export interface EmoteReplacement {
+  code: string;
+  emote: Emote;
+}
+
 export default Emote;
