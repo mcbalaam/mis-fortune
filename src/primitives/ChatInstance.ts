@@ -16,6 +16,16 @@ const BOTUSERNAMES = [
   "fossabot",
 ];
 
+interface BitsTier {
+  min_bits: number;
+  images: {
+    dark: {
+      animated: Record<string, string>;
+    };
+  };
+  color?: string;
+}
+
 class ChatInstance {
   targetChannelUsername: string;
   targetChannelID: string = "0";
@@ -38,10 +48,40 @@ class ChatInstance {
     this.badger = new Badger();
   }
 
-  write(nick: string, info: any, message: string): void {
+  private isColorDark(hex: string): boolean {
+    hex = hex.replace("#", "");
+
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return luminance < 0.5;
+  }
+
+  private lightenColor(hex: string, percent: number): string {
+    hex = hex.replace("#", "");
+
+    const r = Math.min(
+      255,
+      parseInt(hex.slice(0, 2), 16) + Math.floor((255 * percent) / 100),
+    );
+    const g = Math.min(
+      255,
+      parseInt(hex.slice(2, 4), 16) + Math.floor((255 * percent) / 100),
+    );
+    const b = Math.min(
+      255,
+      parseInt(hex.slice(4, 6), 16) + Math.floor((255 * percent) / 100),
+    );
+
+    return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+  }
+
+  write(username: string, info: any, message: string): void {
     if (
-      BOTUSERNAMES.includes(nick.toLowerCase()) &&
-      this.blockedUsers.includes(nick.toLowerCase())
+      BOTUSERNAMES.includes(username.toLowerCase()) &&
+      this.blockedUsers.includes(username.toLowerCase())
     ) {
       return;
     }
@@ -84,7 +124,7 @@ class ChatInstance {
     }
 
     // все остальные бейджи
-    const userBadges = this.badger.getUserBadges(nick);
+    const userBadges = this.badger.getUserBadges(username);
     userBadges.forEach((userBadge) => {
       badges.push({
         ...userBadge,
@@ -96,10 +136,12 @@ class ChatInstance {
     const regularBadgesList = badges.filter((b) => !b.priority);
     const sortedBadges = [...priorityBadgesList, ...regularBadgesList];
 
+    // Цвет ника с авто-осветлением
     let color: string;
     if (typeof info.color === "string" && info.color) {
-      const tc = (window as any).tinycolor(info.color);
-      color = tc.getBrightness() <= 50 ? tc.lighten(30).toString() : info.color;
+      color = this.isColorDark(info.color)
+        ? this.lightenColor(info.color, 30)
+        : info.color;
     } else {
       const twitchColors = [
         "#FF0000",
@@ -118,7 +160,7 @@ class ChatInstance {
         "#8A2BE2",
         "#00FF7F",
       ];
-      color = twitchColors[nick.charCodeAt(0) % 15] || "#FF4500";
+      color = twitchColors[username.charCodeAt(0) % 15];
     }
 
     const twitchEmotes: string[] = [];
@@ -131,11 +173,14 @@ class ChatInstance {
     }
 
     const thirdPartyEmotes: EmoteReplacement[] = [];
-    Object.entries(this.emotes).forEach(([code, emote]) => {
-      if (cleanMessage.search(new RegExp(escapeRegExp(code), "i")) > -1) {
-        thirdPartyEmotes.push({ code, emote });
+    const words = cleanMessage.split(/\s+/);
+
+    for (const word of words) {
+      const emote = this.emotes[word];
+      if (emote) {
+        thirdPartyEmotes.push({ code: word, emote });
       }
-    });
+    }
 
     let cheer: CheerInfo | undefined;
     let bits: number | undefined;
@@ -159,9 +204,9 @@ class ChatInstance {
     }
 
     const chatMessage = new ChatMessage({
-      id: info.id || `${nick}_${timestamp}`,
-      nick,
-      displayName: info["display-name"] || nick,
+      id: info.id || `${username}_${timestamp}`,
+      username,
+      displayName: info["display-name"] || username,
       color,
       badges: sortedBadges,
       message: cleanMessage,
@@ -177,9 +222,9 @@ class ChatInstance {
     this.messages.push(chatMessage);
   }
 
-  clearChat(nick: string): void {
+  clearChat(username: string): void {
     this.messages = this.messages.filter(
-      (msg) => msg.nick.toLowerCase() !== nick.toLowerCase(),
+      (msg) => msg.username.toLowerCase() !== username.toLowerCase(),
     );
   }
 
@@ -190,7 +235,7 @@ class ChatInstance {
   async fetchEmotes() {
     this.emotes = {};
 
-    // FrankerFaceZ emotes
+    // FrankerFaceZ эмоуты
     const ffzEndpoints = [
       "emotes/global",
       `users/twitch/${encodeURIComponent(this.targetChannelUsername)}`,
@@ -212,12 +257,10 @@ class ChatInstance {
             upscale,
           });
         });
-      } catch (error) {
-        console.warn(`FFZ emote fetch failed for ${endpoint}:`, error);
-      }
+      } catch (error) {}
     }
 
-    // BetterTTV emotes
+    // BetterTTV эмоуты
     const bttvEndpoints = [
       "emotes/global",
       `users/twitch/${encodeURIComponent(this.targetChannelUsername)}`,
@@ -247,249 +290,288 @@ class ChatInstance {
             ].includes(emoteData.id),
           });
         });
-      } catch (error) {
-        console.warn(`BTTV emote fetch failed for ${endpoint}:`, error);
-      }
+      } catch (error) {}
     }
 
     // 7TV emotes
-    const sevEndpoints = [
-      "emotes/global",
-      `users/${encodeURIComponent(this.targetChannelUsername)}/emotes`,
-    ];
+    try {
+      // 1. Глобальные эмоуты (Global Emote Set)
+      // Используем endpoint emote-sets/global, он надежнее
+      const globalRes: any = await ofetch(
+        "https://7tv.io/v3/emote-sets/global",
+      );
 
-    for (const endpoint of sevEndpoints) {
-      try {
-        const res = await ofetch(`https://api.7tv.app/v2/${endpoint}`);
-        res.forEach((emoteData: any) => {
-          this.emotes[emoteData.name] = new Emote({
-            id: emoteData.id,
-            image: emoteData.urls[emoteData.urls.length - 1][1],
-            zeroWidth: emoteData.visibility_simple.includes("ZERO_WIDTH"),
+      // В v3 эмоуты лежат внутри свойства .emotes
+      if (globalRes.emotes) {
+        globalRes.emotes.forEach((emote: any) => {
+          this.emotes[emote.name] = new Emote({
+            id: emote.id,
+            // Используем прямой CDN шаблон — это надежнее парсинга host.files
+            image: `https://cdn.7tv.app/emote/${emote.id}/4x.webp`,
+            zeroWidth: emote.flags === 1 || emote.flags === 256, // Bitmask for zero-width in v3 often indicates overlay
           });
         });
-      } catch (error) {
-        console.warn(`7TV emote fetch failed for ${endpoint}:`, error);
       }
-    }
+
+      // 2. Эмоуты канала
+      // ВАЖНО: 7TV API v3 лучше работает с ID пользователя, но поддерживает и логин.
+      // Структура ответа: User Object -> emote_set -> emotes
+      const userRes: any = await ofetch(
+        `https://7tv.io/v3/users/twitch/${encodeURIComponent(this.targetChannelID)}`,
+      );
+
+      // Проверяем наличие emote_set
+      const channelEmotes = userRes.emote_set?.emotes || [];
+
+      channelEmotes.forEach((emote: any) => {
+        // Эмоут может быть объектом или ссылкой, берем data если есть
+        const emoteData = emote.data || emote;
+
+        this.emotes[emoteData.name] = new Emote({
+          id: emoteData.id,
+          image: `https://cdn.7tv.app/emote/${emoteData.id}/4x.webp`,
+          zeroWidth: emoteData.flags === 1 || emoteData.flags === 256,
+        });
+      });
+    } catch (err) {}
   }
 
-  private async doAPIRequest(endpoint: string): Promise<any> {
-    const headers = {
-      "Client-ID": "YOUR_TWITCH_CLIENT_ID",
-      Accept: "application/vnd.twitchtv.v5+json",
-    };
-
+  async getChannelID(username: string): Promise<string | null> {
     try {
-      return await ofetch(endpoint, { headers });
-    } catch (error) {
-      console.warn(`Twitch API failed for ${endpoint}:`, error);
-      throw error;
+      const response = await ofetch("https://gql.twitch.tv/gql", {
+        method: "POST",
+        headers: {
+          "Client-Id": "kimne78kx3ncx6brgo4mv6wki5h1ko", // Это публичный ID веб-сайта Twitch
+        },
+        body: {
+          query: `
+            query GetChannelID($login: String!) {
+              user(login: $login) {
+                id
+              }
+            }
+          `,
+          variables: {
+            login: username,
+          },
+        },
+      });
+
+      return response.data?.user?.id || null;
+    } catch (e) {
+      return null;
     }
   }
 
   async init() {
-    try {
-      const userRes = await this.doAPIRequest(
-        `https://api.twitch.tv/v5/users?login=${encodeURIComponent(this.targetChannelUsername)}`,
-      );
-      const channelID = userRes.users[0]._id;
-      this.targetChannelID = channelID;
+    console.log("[mf] init() called");
 
-      await this.fetchEmotes();
+    const id = await this.getChannelID(this.targetChannelUsername);
 
-      // Загружаем twitch‑бейджи (глобальные + канал)
-      if (this.prefs.showBadges) {
-        const globalBadges = await this.doAPIRequest(
-          "https://badges.twitch.tv/v1/badges/global/display",
-        );
-        Object.entries(globalBadges.badge_sets).forEach((badge: any) => {
-          Object.entries(badge[1].versions).forEach((v: any) => {
-            this.badges[badge[0] + ":" + v[0]] = v[1].image_url_4x;
-          });
-        });
-
-        const channelBadges = await this.doAPIRequest(
-          `https://badges.twitch.tv/v1/badges/channels/${encodeURIComponent(this.targetChannelID!)}/display`,
-        );
-        Object.entries(channelBadges.badge_sets).forEach((badge: any) => {
-          Object.entries(badge[1].versions).forEach((v: any) => {
-            this.badges[badge[0] + ":" + v[0]] = v[1].image_url_4x;
-          });
-        });
-
-        // FrankerFaceZ room badges (модератор/вип override)
-        try {
-          const ffzRoom = await ofetch(
-            `https://api.frankerfacez.com/v1/_room/id/${encodeURIComponent(this.targetChannelID!)}`,
-          );
-          if (ffzRoom.room.moderator_badge) {
-            this.badges["moderator:1"] =
-              `https://cdn.frankerfacez.com/room-badge/mod/${this.targetChannelUsername}/4/rounded`;
-          }
-          if (ffzRoom.room.vip_badge) {
-            this.badges["vip:1"] =
-              `https://cdn.frankerfacez.com/room-badge/vip/${this.targetChannelUsername}/4`;
-          }
-        } catch (error) {
-          console.warn("FFZ room badges fetch failed:", error);
-        }
-
-        // грузим глобальные бейджи в бэйджере
-        await this.badger.loadGlobalBadges();
-      }
-
-      // Load cheers
-      // Load cheers
-      try {
-        const cheersRes = await this.doAPIRequest(
-          `https://api.twitch.tv/v5/bits/actions?channel_id=${this.targetChannelID}`,
-        );
-        cheersRes.actions.forEach((action: any) => {
-          if (!action.prefix) return;
-          this.cheers[action.prefix] = {};
-          action.tiers?.forEach((tier: any) => {
-            const minBits = tier.min_bits;
-            const image = tier.images?.dark?.animated?.["4"];
-
-            if (minBits && image) {
-              this.cheers[action.prefix][minBits] = {
-                image,
-                color: tier.color || "#9146FF",
-              };
-            }
-          });
-        });
-      } catch (error) {
-        console.warn("Cheers fetch failed:", error);
-      }
-    } catch (error) {
-      console.error("Chat load failed:", error);
+    if (id) {
+      this.targetChannelID = id;
+    } else {
     }
+
+    await this.fetchEmotes();
+    console.log("[mf] emotes fetched");
+
+    if (this.prefs.showBadges) {
+      await this.badger.loadGlobalBadges();
+    }
+
+    console.log("[mf] init finished OK");
   }
 
-  runSocketConnection() {
-    console.log("jChat: Connecting to IRC server...");
+  // async init() {
+  //   console.log("running init...");
+  //   try {
 
-    const socket = new WebSocket("wss://irc-ws.chat.twitch.tv", "irc");
+  //     this.targetChannelID = channelID;
+
+  //     await this.fetchEmotes();
+
+  //     // грузим twitch‑бейджи (глобальные + канал)
+  //     if (this.prefs.showBadges) {
+  //       const globalBadges = await this.doAPIRequest(
+  //         "https://badges.twitch.tv/v1/badges/global/display",
+  //       );
+  //       Object.entries(globalBadges.badge_sets).forEach((badge: any) => {
+  //         Object.entries(badge[1].versions).forEach((v: any) => {
+  //           this.badges[badge[0] + ":" + v[0]] = v[1].image_url_4x;
+  //         });
+  //       });
+
+  //       const channelBadges = await this.doAPIRequest(
+  //         `https://badges.twitch.tv/v1/badges/channels/${encodeURIComponent(this.targetChannelID!)}/display`,
+  //       );
+  //       Object.entries(channelBadges.badge_sets).forEach((badge: any) => {
+  //         Object.entries(badge[1].versions).forEach((v: any) => {
+  //           this.badges[badge[0] + ":" + v[0]] = v[1].image_url_4x;
+  //         });
+  //       });
+
+  //       // FrankerFaceZ рум бейджи (модератор/вип override)
+  //       try {
+  //         const ffzRoom = await ofetch(
+  //           `https://api.frankerfacez.com/v1/_room/id/${encodeURIComponent(this.targetChannelID!)}`,
+  //         );
+  //         if (ffzRoom.room.moderator_badge) {
+  //           this.badges["moderator:1"] =
+  //             `https://cdn.frankerfacez.com/room-badge/mod/${this.targetChannelUsername}/4/rounded`;
+  //         }
+  //         if (ffzRoom.room.vip_badge) {
+  //           this.badges["vip:1"] =
+  //             `https://cdn.frankerfacez.com/room-badge/vip/${this.targetChannelUsername}/4`;
+  //         }
+  //       } catch (error) {
+  //         console.warn("FFZ room badges fetch failed:", error);
+  //       }
+
+  //       // грузим глобальные бейджи в бэйджере
+  //       await this.badger.loadGlobalBadges();
+  //     }
+
+  //     // грузим чирсы (для богачей)
+  //     try {
+  //       const cheersRes = await this.doAPIRequest(
+  //         `https://api.twitch.tv/v5/bits/actions?channel_id=${this.targetChannelID}`,
+  //       );
+  //       cheersRes.actions.forEach((action: any) => {
+  //         if (!action.prefix || !action.tiers) return;
+
+  //         this.cheers[action.prefix] = {};
+
+  //         (action.tiers as BitsTier[]).forEach((tier) => {
+  //           const image = tier.images.dark?.animated?.["4"];
+  //           if (image) {
+  //             this.cheers[action.prefix]![tier.min_bits] = {
+  //               image,
+  //               color: tier.color || "#9146FF",
+  //             };
+  //           }
+  //         });
+  //       });
+  //     } catch (error) {
+  //       console.warn("Cheers fetch failed:", error);
+  //     }
+  //   } catch (error) {
+  //     console.error("Chat load failed:", error);
+  //   }
+  // }
+
+  runSocketConnection() {
+    console.log("[mf] connecting to IRC...");
+
+    const socket = new WebSocket("wss://irc-ws.chat.twitch.tv:443", "irc");
 
     socket.onopen = () => {
-      console.log("mis-fortune: socket connection established");
-      socket.send("PASS blah\r\n");
-      socket.send(`NICK justinfan${Math.floor(Math.random() * 99999)}\r\n`);
-      socket.send("CAP REQ :twitch.tv/commands twitch.tv/tags\r\n");
-      socket.send(`JOIN #${this.targetChannelUsername}\r\n`);
+      socket.send("CAP REQ :twitch.tv/tags twitch.tv/commands"); // 1. Сначала CAP
+      socket.send("NICK justinfan0"); // 2. Фиксированный username
+      socket.send("PASS oauth:"); // 3. Пустой OAuth для анонимки
+      socket.send(`JOIN #${this.targetChannelUsername.toLowerCase()}`); // 4. Канал в lowercase
     };
 
     socket.onclose = () => {
-      console.log("mis-fortune: disconnected");
+      console.log("[mf] socket connection lost - reconnecting in 3s...");
+      setTimeout(() => this.runSocketConnection(), 3000);
     };
 
     socket.onerror = (error) => {
-      console.error("mis-fortune: WebSocket error:", error);
+      console.error("[mf] WebSocket error:", error);
     };
 
     socket.onmessage = (event: MessageEvent) => {
       (event.data as string).split("\r\n").forEach((line) => {
-        if (!line) return;
+        if (!line.trim()) return;
+
         const message = parseIRC(line);
         if (!message || !message.command) return;
 
         switch (message.command) {
           case "PING":
-            socket.send(`PONG ${message.params[0]}`);
+            socket.send(`PONG :tmi.twitch.tv`);
             return;
+
+          case "001": // [mf] IRC Ready
+          case "372": // MOTD
+          case "375": // MOTD start
+          case "376": // MOTD end
+            console.log("[mf] IRC handshake complete");
+            return;
+
           case "JOIN":
-            console.log(
-              `mis-fortune: channel #${this.targetChannelUsername} joined`,
-            );
+            console.log(`[mf] joined #${this.targetChannelUsername}`);
             return;
+
           case "CLEARMSG":
-            if (
-              message.tags &&
-              message.tags["target-msg-id"] &&
-              typeof message.tags["target-msg-id"] === "string"
-            )
+            if (message.tags?.["target-msg-id"]) {
               this.clearMessage(message.tags["target-msg-id"]);
+            }
             return;
+
           case "CLEARCHAT":
             if (message.params[1]) this.clearChat(message.params[1]);
             return;
+
           case "PRIVMSG":
             if (
-              message.params[0] !== `#${this.targetChannelUsername}` ||
+              message.params[0] !==
+                `#${this.targetChannelUsername.toLowerCase()}` ||
               !message.params[1]
+            ) {
+              return;
+            }
+
+            const username = message.prefix?.split("!")[0] || "";
+            if (!username) return;
+
+            // Команды модераторов
+            if (message.params[1].toLowerCase() === "!refreshoverlay") {
+              const hasModBadge = message.tags?.badges
+                ?.split(",")
+                .some(
+                  (badge) =>
+                    badge.startsWith("moderator/") ||
+                    badge.startsWith("broadcaster/"),
+                );
+              if (hasModBadge) {
+                this.fetchEmotes();
+              }
+              return;
+            }
+
+            // Фильтры
+            if (this.prefs.hideCommands && /^!.+/.test(message.params[1]))
+              return;
+            if (
+              !this.prefs.showBots &&
+              BOTUSERNAMES.includes(username.toLowerCase())
             )
               return;
-            const nick = message.prefix?.split("@")[0].split("!")[0];
-            if (!nick) return;
+            if (this.blockedUsers.includes(username.toLowerCase())) return;
 
-            if (
-              message.params[1].toLowerCase() === "!refreshoverlay" &&
-              message.tags.badges &&
-              typeof message.tags.badges === "string"
-            ) {
-              let flag = false;
-              message.tags.badges.split(",").forEach((badge) => {
-                const badgeParts = badge.split("/");
-                if (
-                  badgeParts[0] === "moderator" ||
-                  badgeParts[0] === "broadcaster"
-                ) {
-                  flag = true;
-                }
-              });
-              if (flag) {
-                this.fetchEmotes();
-                console.log("mis-fortune: refreshing emotes now...");
-                return;
-              }
-            }
-
-            if (this.prefs.hideCommands) {
-              if (/^!.+/.test(message.params[1])) return;
-            }
-
-            if (!this.prefs.showBots) {
-              if (BOTUSERNAMES.includes(nick)) return;
-            }
-
-            if (this.blockedUsers) {
-              if (this.blockedUsers.includes(nick)) return;
-            }
-
-            // Загрузка пользовательских бейджей через Badger
-            if (this.prefs.showBadges) {
-              const cacheKey = nick.toLowerCase();
-              const hasBadges = this.badger.hasBadges(cacheKey);
-              const isLoading = this.loadingUserBadges.has(cacheKey);
-
+            // Бейджи (ленивая загрузка)
+            if (this.prefs.showBadges && message.tags?.["user-id"]) {
+              const cacheKey = username.toLowerCase();
               if (
-                !hasBadges &&
-                !isLoading &&
-                message.tags["user-id"] &&
-                typeof message.tags["user-id"] === "string"
+                !this.badger.hasBadges(cacheKey) &&
+                !this.loadingUserBadges.has(cacheKey)
               ) {
                 this.loadingUserBadges.add(cacheKey);
                 this.badger
-                  .loadUserBadges(nick, message.tags["user-id"])
-                  .catch((err) =>
-                    console.warn(
-                      `Failed to load user badges for ${nick}:`,
-                      err,
-                    ),
-                  )
-                  .finally(() => {
-                    this.loadingUserBadges.delete(cacheKey);
-                  });
+                  .loadUserBadges(username, message.tags["user-id"] as string)
+                  .finally(() => this.loadingUserBadges.delete(cacheKey));
               }
             }
 
-            this.write(nick, message.tags || {}, message.params[1]);
+            this.write(username, message.tags || {}, message.params[1]);
             return;
         }
       });
     };
+
+    (this as any).socket = socket;
   }
 }
 

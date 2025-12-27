@@ -33,12 +33,6 @@ export interface BTTVBadgeUser {
   };
 }
 
-export interface SevBadge {
-  tooltip: string;
-  urls: string[][];
-  users: string[];
-}
-
 export interface ChatterinoBadge {
   tooltip: string;
   image1?: string;
@@ -56,27 +50,25 @@ export default class Badger {
   private chatterinoBadges: ChatterinoBadge[] = [];
   private ffzapBadges: FfzapUser[] = [];
   private bttvBadges: BTTVBadgeUser[] = [];
-  private seventvBadges: SevBadge[] | null = null;
+
+  // 7TV бейджи теперь грузятся индивидуально, глобального списка нет
 
   // флаги загрузки
   private loadingUsers: Set<string> = new Set();
 
   async loadGlobalBadges(): Promise<void> {
     try {
-      const [chatterino, ffzap, bttv, seventv] = await Promise.all([
+      // 7TV убран из Promise.all, так как глобального списка нет в v3
+      const [chatterino, ffzap, bttv] = await Promise.all([
         this.fetchChatterinoBadges(),
         this.fetchFfzapBadges(),
         this.fetchBttvBadges(),
-        this.fetchSeventvBadges(),
       ]);
 
       this.chatterinoBadges = chatterino;
       this.ffzapBadges = ffzap;
       this.bttvBadges = bttv;
-      this.seventvBadges = seventv;
-    } catch (error) {
-      console.error("Failed to load global badges:", error);
-    }
+    } catch (error) {}
   }
 
   async loadUserBadges(username: string, userId: string): Promise<void> {
@@ -91,20 +83,27 @@ export default class Badger {
     try {
       const badges: Badge[] = [];
 
+      // 1. FFZ (Индивидуальный запрос)
       const ffzBadges = await this.loadFFZBadges(username);
       badges.push(...ffzBadges);
 
+      // 2. FFZ:AP (Из глобального списка по ID)
       const ffzapBadge = this.loadFfzapBadge(userId);
       if (ffzapBadge) {
         badges.push(ffzapBadge);
       }
 
+      // 3. BTTV (Из глобального списка по имени)
       const bttvBadges = this.loadBttvBadges(username);
       badges.push(...bttvBadges);
 
-      const sevBadges = this.loadSeventvBadges(username);
-      badges.push(...sevBadges);
+      // 4. 7TV (Индивидуальный запрос v3 по ID)
+      const sevBadge = await this.loadSeventvBadge(userId);
+      if (sevBadge) {
+        badges.push(sevBadge);
+      }
 
+      // 5. Chatterino (Из глобального списка по ID)
       const chatterinoBadges = this.loadChatterinoBadges(userId);
       badges.push(...chatterinoBadges);
 
@@ -112,7 +111,6 @@ export default class Badger {
 
       this.userBadgesCache.set(cacheKey, uniqueBadges);
     } catch (error) {
-      console.error(`Failed to load badges for ${username}:`, error);
       this.userBadgesCache.set(cacheKey, []);
     } finally {
       this.loadingUsers.delete(cacheKey);
@@ -146,11 +144,12 @@ export default class Badger {
 
       if (res.badges) {
         Object.entries(res.badges).forEach(([key, badgeData]) => {
-          const url = badgeData.urls["4"];
+          const url =
+            badgeData.urls["4"] || badgeData.urls["2"] || badgeData.urls["1"];
           if (url) {
             badges.push({
               description: badgeData.title,
-              url: `https:${url}`,
+              url: url.startsWith("http") ? url : `https:${url}`,
               color: badgeData.color,
               priority: false,
             });
@@ -160,7 +159,7 @@ export default class Badger {
 
       return badges;
     } catch (error) {
-      console.warn(`FFZ badges fetch failed for ${username}:`, error);
+      // 404 для FFZ это норма, если у юзера нет бейджей
       return [];
     }
   }
@@ -194,17 +193,28 @@ export default class Badger {
       }));
   }
 
-  private loadSeventvBadges(username: string): Badge[] {
-    if (!this.seventvBadges) return [];
+  // НОВЫЙ МЕТОД ДЛЯ 7TV v3
+  private async loadSeventvBadge(userId: string): Promise<Badge | null> {
+    try {
+      // Запрашиваем данные пользователя по ID
+      const data = await ofetch(`https://7tv.io/v3/users/twitch/${userId}`);
 
-    return this.seventvBadges
-      .filter((badge) => badge.users.includes(username))
-      .map((badge) => ({
-        description: badge.tooltip,
-        url: badge.urls[2]?.[1],
-        priority: false,
-      }))
-      .filter((badge): badge is Badge => !!badge.url);
+      // В v3 бейдж находится в style.badge (если он активен/выбран)
+      const badge = data.user?.style?.badge || data.style?.badge;
+
+      if (badge) {
+        return {
+          description: badge.tooltip || "7TV Badge",
+          // URL бейджа берем с CDN
+          url: `https://cdn.7tv.app/badge/${badge.id}/3x.webp`,
+          priority: false,
+        };
+      }
+      return null;
+    } catch (error) {
+      // 404 означает отсутствие профиля на 7TV, игнорируем
+      return null;
+    }
   }
 
   private loadChatterinoBadges(userId: string): Badge[] {
@@ -236,9 +246,9 @@ export default class Badger {
 
   private async fetchChatterinoBadges(): Promise<ChatterinoBadge[]> {
     try {
-      return await ofetch("https://api.chatterino.com/badges");
+      const res = await ofetch("https://api.chatterino.com/badges");
+      return res.badges || res;
     } catch (error) {
-      console.error("Failed to fetch Chatterino badges:", error);
       return [];
     }
   }
@@ -247,7 +257,6 @@ export default class Badger {
     try {
       return await ofetch("https://api.ffzap.com/v1/supporters");
     } catch (error) {
-      console.error("Failed to fetch FFZ:AP badges:", error);
       return [];
     }
   }
@@ -256,17 +265,7 @@ export default class Badger {
     try {
       return await ofetch("https://api.betterttv.net/3/cached/badges");
     } catch (error) {
-      console.error("Failed to fetch BTTV badges:", error);
       return [];
-    }
-  }
-
-  private async fetchSeventvBadges(): Promise<SevBadge[] | null> {
-    try {
-      return await ofetch("https://7tv.io/v3/badges");
-    } catch (error) {
-      console.error("Failed to fetch 7TV badges:", error);
-      return null;
     }
   }
 }

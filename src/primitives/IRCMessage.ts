@@ -101,6 +101,4 @@ function parseIRC(data: string): IRCMessage | null {
   return message;
 }
 
-(window as any).parseIRC = parseIRC;
-
 export default parseIRC;

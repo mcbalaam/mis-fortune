@@ -3,7 +3,7 @@ import type { EmoteReplacement } from "./Emote";
 
 export class ChatMessage {
   id: string;
-  nick: string;
+  username: string;
   displayName: string;
   color: string;
   badges: Badge[];
@@ -18,7 +18,7 @@ export class ChatMessage {
 
   constructor(data: {
     id: string;
-    nick: string;
+    username: string;
     displayName: string;
     color: string;
     badges: Badge[];
@@ -32,7 +32,7 @@ export class ChatMessage {
     bits?: number;
   }) {
     this.id = data.id;
-    this.nick = data.nick;
+    this.username = data.username;
     this.displayName = data.displayName;
     this.color = data.color;
     this.badges = data.badges;
