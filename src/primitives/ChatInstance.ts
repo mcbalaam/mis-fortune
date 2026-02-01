@@ -14,7 +14,10 @@ const BOTUSERNAMES = [
   "nightbot",
   "moobot",
   "fossabot",
+  "wizebot",
 ];
+
+const TWITCH_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko";
 
 interface BitsTier {
   min_bits: number;
@@ -36,11 +39,10 @@ class ChatInstance {
   prefs: UserPreferences;
   badger: Badger;
 
-  // кешируем системные бейджи на инстансе чата
   badges: Record<string, string> = {};
 
-  // чтобы не дёргать бейджера по одному пользователю многократно
   private loadingUserBadges: Set<string> = new Set();
+  private socket: WebSocket | null = null;
 
   constructor(channelUsername: string, prefs: UserPreferences) {
     this.prefs = prefs;
@@ -50,18 +52,15 @@ class ChatInstance {
 
   private isColorDark(hex: string): boolean {
     hex = hex.replace("#", "");
-
     const r = parseInt(hex.slice(0, 2), 16);
     const g = parseInt(hex.slice(2, 4), 16);
     const b = parseInt(hex.slice(4, 6), 16);
-
     const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
     return luminance < 0.5;
   }
 
   private lightenColor(hex: string, percent: number): string {
     hex = hex.replace("#", "");
-
     const r = Math.min(
       255,
       parseInt(hex.slice(0, 2), 16) + Math.floor((255 * percent) / 100),
@@ -74,7 +73,6 @@ class ChatInstance {
       255,
       parseInt(hex.slice(4, 6), 16) + Math.floor((255 * percent) / 100),
     );
-
     return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
   }
 
@@ -108,11 +106,13 @@ class ChatInstance {
       "vip",
     ];
 
-    // твич‑бейджи из tags.badges
+    // fetching IRC Twitch badges
     if (info.badges && typeof info.badges === "string") {
       info.badges.split(",").forEach((badgeStr: string) => {
         const [type, version] = badgeStr.split("/");
+        // looking for badges in the cache
         const badgeUrl = this.badges[`${type}:${version}`];
+
         if (badgeUrl && type) {
           badges.push({
             description: type,
@@ -123,7 +123,7 @@ class ChatInstance {
       });
     }
 
-    // все остальные бейджи
+    // third-party badges (chatterino, 7tv)
     const userBadges = this.badger.getUserBadges(username);
     userBadges.forEach((userBadge) => {
       badges.push({
@@ -136,8 +136,8 @@ class ChatInstance {
     const regularBadgesList = badges.filter((b) => !b.priority);
     const sortedBadges = [...priorityBadgesList, ...regularBadgesList];
 
-    // Цвет ника с авто-осветлением
-    let color: string;
+    // username color
+    let color: string | undefined;
     if (typeof info.color === "string" && info.color) {
       color = this.isColorDark(info.color)
         ? this.lightenColor(info.color, 30)
@@ -163,15 +163,31 @@ class ChatInstance {
       color = twitchColors[username.charCodeAt(0) % 15];
     }
 
-    const twitchEmotes: string[] = [];
+    interface TwitchEmoteData {
+      id: string;
+      start: number;
+      end: number;
+      url: string;
+    }
+
+    const twitchEmotes: TwitchEmoteData[] = [];
+
     if (info.emotes && typeof info.emotes === "string") {
-      info.emotes.split("/").forEach((emoteData: string) => {
-        const [emoteId] = emoteData.split(":");
-        if (!emoteId) return;
-        twitchEmotes.push(emoteId);
+      info.emotes.split("/").forEach((emoteGroup: string) => {
+        const [id, positions] = emoteGroup.split(":");
+        positions.split(",").forEach((range) => {
+          const [start, end] = range.split("-").map(Number);
+          twitchEmotes.push({
+            id,
+            start,
+            end,
+            url: `https://static-cdn.jtvnw.net/emoticons/v2/${id}/default/dark/3.0`,
+          });
+        });
       });
     }
 
+    // Обработка сторонних эмоутов (парсинг текста)
     const thirdPartyEmotes: EmoteReplacement[] = [];
     const words = cleanMessage.split(/\s+/);
 
@@ -182,6 +198,7 @@ class ChatInstance {
       }
     }
 
+    // Обработка Bits / Cheers
     let cheer: CheerInfo | undefined;
     let bits: number | undefined;
     if (info.bits && parseInt(info.bits) > 0) {
@@ -204,7 +221,9 @@ class ChatInstance {
     }
 
     const chatMessage = new ChatMessage({
-      id: info.id || `${username}_${timestamp}`,
+      id:
+        info.id ||
+        `${username}_${timestamp}_${Math.random().toString(36).slice(2)}`,
       username,
       displayName: info["display-name"] || username,
       color,
@@ -232,253 +251,279 @@ class ChatInstance {
     this.messages = this.messages.filter((msg) => msg.id !== id);
   }
 
-  async fetchEmotes() {
-    this.emotes = {};
-
-    // FrankerFaceZ эмоуты
-    const ffzEndpoints = [
-      "emotes/global",
-      `users/twitch/${encodeURIComponent(this.targetChannelUsername)}`,
-    ];
-
-    for (const endpoint of ffzEndpoints) {
-      try {
-        const res = await ofetch(`https://api.frankerfacez.com/v1/${endpoint}`);
-        res.emotes.forEach((emoteData: any) => {
-          const imageUrl =
-            emoteData.images["4x"] ||
-            emoteData.images["2x"] ||
-            emoteData.images["1x"];
-          const upscale = !emoteData.images["4x"];
-
-          this.emotes[emoteData.code] = new Emote({
-            id: emoteData.id,
-            image: imageUrl,
-            upscale,
-          });
-        });
-      } catch (error) {}
-    }
-
-    // BetterTTV эмоуты
-    const bttvEndpoints = [
-      "emotes/global",
-      `users/twitch/${encodeURIComponent(this.targetChannelUsername)}`,
-    ];
-
-    for (const endpoint of bttvEndpoints) {
-      try {
-        const res = await ofetch(
-          `https://api.betterttv.net/3/cached/${endpoint}`,
-        );
-        const emotes = Array.isArray(res)
-          ? res
-          : res.channelEmotes.concat(res.sharedEmotes);
-
-        emotes.forEach((emoteData: any) => {
-          this.emotes[emoteData.code] = new Emote({
-            id: emoteData.id,
-            image: `https://cdn.betterttv.net/emote/${emoteData.id}/3x`,
-            zeroWidth: [
-              "5e76d338d6581c3724c0f0b2", // cvHazmat
-              "5e76d399d6581c3724c0f0b8", // cvMask
-              "567b5b520e984428652809b6", // SoSnowy
-              "5849c9a4f52be01a7ee5f79d", // IceCold
-              "567b5c080e984428652809ba", // CandyCane
-              "567b5dc00e984428652809bd", // ReinDeer
-              "58487cc6f52be01a7ee5f79e", // TopHat
-            ].includes(emoteData.id),
-          });
-        });
-      } catch (error) {}
-    }
-
-    // 7TV emotes
-    try {
-      // 1. Глобальные эмоуты (Global Emote Set)
-      // Используем endpoint emote-sets/global, он надежнее
-      const globalRes: any = await ofetch(
-        "https://7tv.io/v3/emote-sets/global",
-      );
-
-      // В v3 эмоуты лежат внутри свойства .emotes
-      if (globalRes.emotes) {
-        globalRes.emotes.forEach((emote: any) => {
-          this.emotes[emote.name] = new Emote({
-            id: emote.id,
-            // Используем прямой CDN шаблон — это надежнее парсинга host.files
-            image: `https://cdn.7tv.app/emote/${emote.id}/4x.webp`,
-            zeroWidth: emote.flags === 1 || emote.flags === 256, // Bitmask for zero-width in v3 often indicates overlay
-          });
-        });
-      }
-
-      // 2. Эмоуты канала
-      // ВАЖНО: 7TV API v3 лучше работает с ID пользователя, но поддерживает и логин.
-      // Структура ответа: User Object -> emote_set -> emotes
-      const userRes: any = await ofetch(
-        `https://7tv.io/v3/users/twitch/${encodeURIComponent(this.targetChannelID)}`,
-      );
-
-      // Проверяем наличие emote_set
-      const channelEmotes = userRes.emote_set?.emotes || [];
-
-      channelEmotes.forEach((emote: any) => {
-        // Эмоут может быть объектом или ссылкой, берем data если есть
-        const emoteData = emote.data || emote;
-
-        this.emotes[emoteData.name] = new Emote({
-          id: emoteData.id,
-          image: `https://cdn.7tv.app/emote/${emoteData.id}/4x.webp`,
-          zeroWidth: emoteData.flags === 1 || emoteData.flags === 256,
-        });
-      });
-    } catch (err) {}
-  }
-
   async getChannelID(username: string): Promise<string | null> {
     try {
       const response = await ofetch("https://gql.twitch.tv/gql", {
         method: "POST",
-        headers: {
-          "Client-Id": "kimne78kx3ncx6brgo4mv6wki5h1ko", // Это публичный ID веб-сайта Twitch
-        },
+        headers: { "Client-Id": TWITCH_CLIENT_ID },
         body: {
-          query: `
-            query GetChannelID($login: String!) {
-              user(login: $login) {
-                id
-              }
-            }
-          `,
-          variables: {
-            login: username,
-          },
+          query: `query GetChannelID($login: String!) { user(login: $login) { id } }`,
+          variables: { login: username },
         },
       });
-
       return response.data?.user?.id || null;
     } catch (e) {
       return null;
     }
   }
 
-  async init() {
-    console.log("[mf] init() called");
+  async fetchTwitchBadges() {
+    this.write("[m-f]", { color: "#84b574" }, ">> fetching badges...");
 
-    const id = await this.getChannelID(this.targetChannelUsername);
+    try {
+      const globalData: any = await ofetch(
+        "https://api.ivr.fi/v2/twitch/badges/global",
+      );
 
-    if (id) {
-      this.targetChannelID = id;
-    } else {
+      globalData.forEach((set: any) => {
+        set.versions.forEach((ver: any) => {
+          this.badges[`${set.set_id}:${ver.id}`] = ver.image_url_4x;
+        });
+      });
+
+      if (this.targetChannelUsername) {
+        const channelData: any = await ofetch(
+          `https://api.ivr.fi/v2/twitch/badges/channel?login=${this.targetChannelUsername}`,
+        );
+
+        channelData.forEach((set: any) => {
+          set.versions.forEach((ver: any) => {
+            this.badges[`${set.set_id}:${ver.id}`] = ver.image_url_4x;
+          });
+        });
+      }
+
+      this.write(
+        "[m-f]",
+        { color: "#84b574" },
+        `>> fetched ${Object.keys(this.badges).length} badges`,
+      );
+    } catch (e) {
+      console.warn("[Twitch Badges] IVR fetch failed:", e);
     }
-
-    await this.fetchEmotes();
-    console.log("[mf] emotes fetched");
-
-    if (this.prefs.showBadges) {
-      await this.badger.loadGlobalBadges();
-    }
-
-    console.log("[mf] init finished OK");
   }
 
-  // async init() {
-  //   console.log("running init...");
-  //   try {
+  async fetchEmotes() {
+    this.emotes = {};
 
-  //     this.targetChannelID = channelID;
+    // 1. FrankerFaceZ
+    const ffzEndpoints = [
+      "emotes/global",
+      `users/twitch/${encodeURIComponent(this.targetChannelUsername)}`,
+    ];
+    for (const endpoint of ffzEndpoints) {
+      try {
+        const res = await ofetch(
+          `https://api.frankerfacez.com/v1/${endpoint}`,
+          { ignoreResponseError: true, timeout: 5000 },
+        );
+        const sets = res.sets || {};
+        Object.values(sets).forEach((set: any) => {
+          set.emoticons.forEach((emoteData: any) => {
+            const imageUrl =
+              emoteData.urls["4"] || emoteData.urls["2"] || emoteData.urls["1"];
+            this.emotes[emoteData.name] = new Emote({
+              id: emoteData.id,
+              image: imageUrl.startsWith("//") ? `https:${imageUrl}` : imageUrl,
+            });
+          });
+        });
+      } catch (error) {
+      }
+    }
 
-  //     await this.fetchEmotes();
+    // 2. BetterTTV
+    const bttvEndpoints = [
+      "emotes/global",
+      `users/twitch/${encodeURIComponent(this.targetChannelUsername)}`,
+    ];
+    for (const endpoint of bttvEndpoints) {
+      try {
+        const res = await ofetch(
+          `https://api.betterttv.net/3/cached/${endpoint}`,
+          { ignoreResponseError: true, timeout: 5000 },
+        );
+        const emotes = Array.isArray(res)
+          ? res
+          : res.channelEmotes.concat(res.sharedEmotes);
+        emotes.forEach((emoteData: any) => {
+          this.emotes[emoteData.code] = new Emote({
+            id: emoteData.id,
+            image: `https://cdn.betterttv.net/emote/${emoteData.id}/3x`,
+            zeroWidth: [
+              "5e76d338d6581c3724c0f0b2",
+              "5e76d399d6581c3724c0f0b8",
+            ].includes(emoteData.id),
+          });
+        });
+      } catch (error) {
+      }
+    }
 
-  //     // грузим twitch‑бейджи (глобальные + канал)
-  //     if (this.prefs.showBadges) {
-  //       const globalBadges = await this.doAPIRequest(
-  //         "https://badges.twitch.tv/v1/badges/global/display",
-  //       );
-  //       Object.entries(globalBadges.badge_sets).forEach((badge: any) => {
-  //         Object.entries(badge[1].versions).forEach((v: any) => {
-  //           this.badges[badge[0] + ":" + v[0]] = v[1].image_url_4x;
-  //         });
-  //       });
+    // 3. 7TV (V3 API)
+    try {
+      const isZeroWidth = (flags: number) =>
+        (flags & 256) !== 0 || (flags & 1) !== 0;
 
-  //       const channelBadges = await this.doAPIRequest(
-  //         `https://badges.twitch.tv/v1/badges/channels/${encodeURIComponent(this.targetChannelID!)}/display`,
-  //       );
-  //       Object.entries(channelBadges.badge_sets).forEach((badge: any) => {
-  //         Object.entries(badge[1].versions).forEach((v: any) => {
-  //           this.badges[badge[0] + ":" + v[0]] = v[1].image_url_4x;
-  //         });
-  //       });
+      this.write("[7tv]", { color: "#ac73ba" }, `>> fetching emotes...`);
 
-  //       // FrankerFaceZ рум бейджи (модератор/вип override)
-  //       try {
-  //         const ffzRoom = await ofetch(
-  //           `https://api.frankerfacez.com/v1/_room/id/${encodeURIComponent(this.targetChannelID!)}`,
-  //         );
-  //         if (ffzRoom.room.moderator_badge) {
-  //           this.badges["moderator:1"] =
-  //             `https://cdn.frankerfacez.com/room-badge/mod/${this.targetChannelUsername}/4/rounded`;
-  //         }
-  //         if (ffzRoom.room.vip_badge) {
-  //           this.badges["vip:1"] =
-  //             `https://cdn.frankerfacez.com/room-badge/vip/${this.targetChannelUsername}/4`;
-  //         }
-  //       } catch (error) {
-  //         console.warn("FFZ room badges fetch failed:", error);
-  //       }
+      const fetchWithTimeout = (url: string, ms: number) => {
+        const fetchPromise = ofetch(url, { ignoreResponseError: true });
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Timeout")), ms),
+        );
+        return Promise.race([fetchPromise, timeoutPromise]);
+      };
 
-  //       // грузим глобальные бейджи в бэйджере
-  //       await this.badger.loadGlobalBadges();
-  //     }
+      let globalRes: any = {};
+      try {
+        globalRes = await fetchWithTimeout(
+          "https://7tv.io/v3/emote-sets/global",
+          5000,
+        );
+      } catch (e) {
+        console.warn("[7TV] Global emotes timeout or error");
+      }
 
-  //     // грузим чирсы (для богачей)
-  //     try {
-  //       const cheersRes = await this.doAPIRequest(
-  //         `https://api.twitch.tv/v5/bits/actions?channel_id=${this.targetChannelID}`,
-  //       );
-  //       cheersRes.actions.forEach((action: any) => {
-  //         if (!action.prefix || !action.tiers) return;
+      if (globalRes && globalRes.emotes) {
+        globalRes.emotes.forEach((emote: any) => {
+          this.emotes[emote.name] = new Emote({
+            id: emote.id,
+            image: `https://cdn.7tv.app/emote/${emote.id}/4x.webp`,
+            zeroWidth: isZeroWidth(emote.flags),
+          });
+        });
+      }
 
-  //         this.cheers[action.prefix] = {};
+      if (this.targetChannelID && this.targetChannelID !== "0") {
+        let userRes: any = null;
+        try {
+          userRes = await fetchWithTimeout(
+            `https://7tv.io/v3/users/twitch/${this.targetChannelID}`,
+            5000,
+          );
+        } catch (e) {
+          console.warn("[7TV] Channel emotes timeout or error");
+        }
 
-  //         (action.tiers as BitsTier[]).forEach((tier) => {
-  //           const image = tier.images.dark?.animated?.["4"];
-  //           if (image) {
-  //             this.cheers[action.prefix]![tier.min_bits] = {
-  //               image,
-  //               color: tier.color || "#9146FF",
-  //             };
-  //           }
-  //         });
-  //       });
-  //     } catch (error) {
-  //       console.warn("Cheers fetch failed:", error);
-  //     }
-  //   } catch (error) {
-  //     console.error("Chat load failed:", error);
-  //   }
-  // }
+        if (userRes && userRes.emote_set?.emotes) {
+          userRes.emote_set.emotes.forEach((emote: any) => {
+            const code = emote.name;
+            const data = emote.data || emote;
+
+            this.emotes[code] = new Emote({
+              id: data.id,
+              image: `https://cdn.7tv.app/emote/${data.id}/4x.webp`,
+              zeroWidth:
+                data.flags === 1 ||
+                data.flags === 256 ||
+                emote.flags === 1 ||
+                emote.flags === 256,
+            });
+          });
+
+          const count = userRes.emote_set.emotes.length;
+          console.log(`[7TV] Loaded ${count} emotes`);
+          this.write(
+            "[7tv]",
+            { color: "#ac73ba" },
+            `>> fetched ${count} emotes`,
+          );
+        } else if (!userRes) {
+          this.write(
+            "[7tv]",
+            { color: "#ac73ba" },
+            `>> channel emotes skipped (timeout)`,
+          );
+        }
+      }
+    } catch (err) {
+      console.warn("[7TV] fetch critical error:", err);
+      this.write("[7tv]", { color: "#ac73ba" }, `>> failed to fetch emotes`);
+    }
+  }
+
+  async init() {
+    console.log("[m-f] init() called");
+    this.write("[m-f]", { color: "#84b574" }, ">> mis-fortune 0.7");
+    this.write("[m-f]", { color: "#84b574" }, ">> initializing...");
+
+    try {
+      const id = await this.getChannelID(this.targetChannelUsername);
+      if (id) {
+        this.targetChannelID = id;
+        console.log(`[m-f] Resolved ID: ${id}`);
+      } else {
+        console.warn(
+          `[m-f] Could not resolve ID for ${this.targetChannelUsername}, 7TV & Twitch Badges might fail.`,
+        );
+      }
+
+      await Promise.all([this.fetchEmotes(), this.fetchTwitchBadges()]);
+
+      if (this.prefs.showBadges) {
+        const badgePromise = this.badger.loadGlobalBadges();
+        const timeoutPromise = new Promise((resolve) =>
+          setTimeout(resolve, 10000),
+        );
+        await Promise.race([badgePromise, timeoutPromise]);
+      }
+
+      console.log("[m-f] init() finished OK");
+      this.write("[m-f]", { color: "#84b574" }, ">> initialization complete");
+    } catch (e) {
+      console.error("[m-f] init() error:", e);
+    }
+  }
+
+  destroy() {
+    console.log("[m-f] Destroying instance...");
+    if (this.socket) {
+      this.socket.onclose = null;
+      this.socket.onmessage = null;
+      this.socket.onerror = null;
+      this.socket.close();
+      this.socket = null;
+    }
+    this.messages = [];
+  }
 
   runSocketConnection() {
-    console.log("[mf] connecting to IRC...");
+    console.log("[m-f] connecting to IRC...");
+    this.write("[m-f]", { color: "#84b574" }, ">> connecting to IRC...");
+
+    if (this.socket) {
+      this.socket.close();
+    }
 
     const socket = new WebSocket("wss://irc-ws.chat.twitch.tv:443", "irc");
+    this.socket = socket;
 
     socket.onopen = () => {
-      socket.send("CAP REQ :twitch.tv/tags twitch.tv/commands"); // 1. Сначала CAP
-      socket.send("NICK justinfan0"); // 2. Фиксированный username
-      socket.send("PASS oauth:"); // 3. Пустой OAuth для анонимки
-      socket.send(`JOIN #${this.targetChannelUsername.toLowerCase()}`); // 4. Канал в lowercase
+      console.log("[m-f] socket connected");
+      this.write("[m-f]", { color: "#84b574" }, ">> socket connected");
+      socket.send("CAP REQ :twitch.tv/tags twitch.tv/commands");
+      socket.send("NICK justinfan0");
+      socket.send("PASS oauth:");
+      socket.send(`JOIN #${this.targetChannelUsername.toLowerCase()}`);
+      this.write(
+        "[m-f]",
+        { color: "#84b574" },
+        `>> joined #${this.targetChannelUsername}`,
+      );
+      this.write(
+        "\b",
+        { color: "#ffffff" },
+        "\b",
+      );
     };
 
     socket.onclose = () => {
-      console.log("[mf] socket connection lost - reconnecting in 3s...");
-      setTimeout(() => this.runSocketConnection(), 3000);
+      console.log("[m-f] socket connection lost");
     };
 
     socket.onerror = (error) => {
-      console.error("[mf] WebSocket error:", error);
+      console.error("[m-f] WebSocket error:", error);
     };
 
     socket.onmessage = (event: MessageEvent) => {
@@ -487,21 +532,27 @@ class ChatInstance {
 
         const message = parseIRC(line);
         if (!message || !message.command) return;
+        if (
+          message.command === "ROOMSTATE" ||
+          message.command === "USERSTATE"
+        ) {
+          if (message.tags?.["room-id"] && this.targetChannelID === "0") {
+            this.targetChannelID = message.tags["room-id"] as string;
+          }
+        }
 
         switch (message.command) {
           case "PING":
             socket.send(`PONG :tmi.twitch.tv`);
             return;
 
-          case "001": // [mf] IRC Ready
-          case "372": // MOTD
-          case "375": // MOTD start
-          case "376": // MOTD end
-            console.log("[mf] IRC handshake complete");
+          case "001":
+          case "372":
+          case "375":
+          case "376":
             return;
 
           case "JOIN":
-            console.log(`[mf] joined #${this.targetChannelUsername}`);
             return;
 
           case "CLEARMSG":
@@ -526,7 +577,6 @@ class ChatInstance {
             const username = message.prefix?.split("!")[0] || "";
             if (!username) return;
 
-            // Команды модераторов
             if (message.params[1].toLowerCase() === "!refreshoverlay") {
               const hasModBadge = message.tags?.badges
                 ?.split(",")
@@ -537,11 +587,12 @@ class ChatInstance {
                 );
               if (hasModBadge) {
                 this.fetchEmotes();
+                this.fetchTwitchBadges();
+                console.log("🔄 Overlay refreshed by mod");
               }
               return;
             }
 
-            // Фильтры
             if (this.prefs.hideCommands && /^!.+/.test(message.params[1]))
               return;
             if (
@@ -551,7 +602,6 @@ class ChatInstance {
               return;
             if (this.blockedUsers.includes(username.toLowerCase())) return;
 
-            // Бейджи (ленивая загрузка)
             if (this.prefs.showBadges && message.tags?.["user-id"]) {
               const cacheKey = username.toLowerCase();
               if (
@@ -561,6 +611,9 @@ class ChatInstance {
                 this.loadingUserBadges.add(cacheKey);
                 this.badger
                   .loadUserBadges(username, message.tags["user-id"] as string)
+                  .catch((err) =>
+                    console.warn(`Badges failed for ${username}`, err),
+                  )
                   .finally(() => this.loadingUserBadges.delete(cacheKey));
               }
             }
@@ -570,8 +623,6 @@ class ChatInstance {
         }
       });
     };
-
-    (this as any).socket = socket;
   }
 }
 

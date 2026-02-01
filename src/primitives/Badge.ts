@@ -83,27 +83,27 @@ export default class Badger {
     try {
       const badges: Badge[] = [];
 
-      // 1. FFZ (Индивидуальный запрос)
+      // 1. FFZ (индивидуальный запрос)
       const ffzBadges = await this.loadFFZBadges(username);
       badges.push(...ffzBadges);
 
-      // 2. FFZ:AP (Из глобального списка по ID)
+      // 2. FFZ:AP (из глобального списка по ID)
       const ffzapBadge = this.loadFfzapBadge(userId);
       if (ffzapBadge) {
         badges.push(ffzapBadge);
       }
 
-      // 3. BTTV (Из глобального списка по имени)
+      // 3. BTTV (из глобального списка по имени)
       const bttvBadges = this.loadBttvBadges(username);
       badges.push(...bttvBadges);
 
-      // 4. 7TV (Индивидуальный запрос v3 по ID)
+      // 4. 7TV (индивидуальный запрос v3 по ID)
       const sevBadge = await this.loadSeventvBadge(userId);
       if (sevBadge) {
         badges.push(sevBadge);
       }
 
-      // 5. Chatterino (Из глобального списка по ID)
+      // 5. Chatterino (из глобального списка по ID)
       const chatterinoBadges = this.loadChatterinoBadges(userId);
       badges.push(...chatterinoBadges);
 
@@ -138,6 +138,7 @@ export default class Badger {
     try {
       const res: FFZUserBadges = await ofetch(
         `https://api.frankerfacez.com/v1/user/${username}`,
+        { ignoreResponseError: true, timeout: 5000 },
       );
 
       const badges: Badge[] = [];
@@ -159,7 +160,6 @@ export default class Badger {
 
       return badges;
     } catch (error) {
-      // 404 для FFZ это норма, если у юзера нет бейджей
       return [];
     }
   }
@@ -193,26 +193,24 @@ export default class Badger {
       }));
   }
 
-  // НОВЫЙ МЕТОД ДЛЯ 7TV v3
   private async loadSeventvBadge(userId: string): Promise<Badge | null> {
     try {
-      // Запрашиваем данные пользователя по ID
-      const data = await ofetch(`https://7tv.io/v3/users/twitch/${userId}`);
+      const data = await ofetch(`https://7tv.io/v3/users/twitch/${userId}`, {
+        ignoreResponseError: true,
+        timeout: 5000,
+      });
 
-      // В v3 бейдж находится в style.badge (если он активен/выбран)
       const badge = data.user?.style?.badge || data.style?.badge;
 
       if (badge) {
         return {
           description: badge.tooltip || "7TV Badge",
-          // URL бейджа берем с CDN
           url: `https://cdn.7tv.app/badge/${badge.id}/3x.webp`,
           priority: false,
         };
       }
       return null;
     } catch (error) {
-      // 404 означает отсутствие профиля на 7TV, игнорируем
       return null;
     }
   }
@@ -246,7 +244,9 @@ export default class Badger {
 
   private async fetchChatterinoBadges(): Promise<ChatterinoBadge[]> {
     try {
-      const res = await ofetch("https://api.chatterino.com/badges");
+      const res = await ofetch("https://api.chatterino.com/badges", {
+        timeout: 5000,
+      });
       return res.badges || res;
     } catch (error) {
       return [];
@@ -255,7 +255,9 @@ export default class Badger {
 
   private async fetchFfzapBadges(): Promise<FfzapUser[]> {
     try {
-      return await ofetch("https://api.ffzap.com/v1/supporters");
+      return await ofetch("https://api.ffzap.com/v1/supporters", {
+        timeout: 5000,
+      });
     } catch (error) {
       return [];
     }
@@ -263,7 +265,10 @@ export default class Badger {
 
   private async fetchBttvBadges(): Promise<BTTVBadgeUser[]> {
     try {
-      return await ofetch("https://api.betterttv.net/3/cached/badges");
+      return await ofetch("https://api.betterttv.net/3/cached/badges", {
+        ignoreResponseError: true,
+        timeout: 5000,
+      });
     } catch (error) {
       return [];
     }

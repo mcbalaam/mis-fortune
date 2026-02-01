@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
 import ChatInstance from "./primitives/ChatInstance";
-import {
-  UserPreferences,
-  createPreferences,
-} from "./primitives/UserPreferences";
+import { createPreferences } from "./primitives/UserPreferences";
+import type { UserPreferences } from "./primitives/UserPreferences";
 import ChatLine from "./components/ChatLine";
 import "./index.css";
+import misFortuneLogo from "./mis-fortune.png";
 
 export function App() {
   const [chatInstance, setChatInstance] = useState<ChatInstance | null>(null);
@@ -13,86 +12,114 @@ export function App() {
   const [isConnected, setIsConnected] = useState(false);
 
   useEffect(() => {
-    // ✅ Парсим URL напрямую - НИКАКИХ window.CHAT_DATA!
-    const url = new URL(window.location.href);
-    const pathParts = url.pathname.slice(1).split("/").filter(Boolean);
+    const rawHash = window.location.hash.replace(/^#\/?/, "");
+    if (!rawHash) return;
 
-    const channel = pathParts[0];
+    const channel = rawHash.split(/[?]/)[0];
+    if (!channel) return;
 
-    // Парсим query параметры
+    const urlObj = new URL(window.location.href);
+    const searchParams = urlObj.searchParams;
+
+    if (rawHash.includes("?")) {
+      const hashQuery = rawHash.split("?")[1];
+      const hashParams = new URLSearchParams(hashQuery);
+      hashParams.forEach((val, key) => {
+        searchParams.set(key, val);
+      });
+    }
+
     const prefs = createPreferences({
-      fontSizePx: url.searchParams.get("fontSize")
-        ? parseInt(url.searchParams.get("fontSize")!) || 16
+      fontSizePx: searchParams.get("fontSize")
+        ? parseInt(searchParams.get("fontSize")!) || 16
         : undefined,
-      fontFamily: url.searchParams.get("fontFamily") || undefined,
-      fontWeight: url.searchParams.get("fontWeight")
-        ? parseInt(url.searchParams.get("fontWeight")!) || 400
+      fontFamily: searchParams.get("fontFamily") || undefined,
+      fontWeight: searchParams.get("fontWeight")
+        ? parseInt(searchParams.get("fontWeight")!) || 400
         : undefined,
-      chatboxAlign: (url.searchParams.get("chatboxAlign") as any) || undefined,
-      messageLifetime: url.searchParams.get("lifetime")
-        ? parseInt(url.searchParams.get("lifetime")!)
+      chatboxAlign: (searchParams.get("chatboxAlign") as any) || undefined,
+      messageLifetime: searchParams.get("lifetime")
+        ? parseInt(searchParams.get("lifetime")!)
         : undefined,
-      messageColorHex: url.searchParams.get("color") || undefined,
-      backgroundColorHex: url.searchParams.get("bg") || undefined,
-      useUserColors: url.searchParams.get("usercolors") === "1",
-      showBots: url.searchParams.get("bots") !== "0",
-      hideCommands: url.searchParams.get("commands") === "1",
-      showBadges: url.searchParams.get("badges") !== "0",
+      messageColorHex: searchParams.get("color") || undefined,
+      backgroundColorHex: searchParams.get("bg") || undefined,
+      useUserColors: searchParams.get("usercolors") === "1",
+      showBots: searchParams.get("bots") !== "0",
+      hideCommands: searchParams.get("commands") === "1",
+      showBadges: searchParams.get("badges") !== "0",
     });
 
-    // Создаем чат
+    let isMounted = true;
     const instance = new ChatInstance(channel, prefs);
-
-    // Перехватываем сообщения
     const originalPush = instance.messages.push.bind(instance.messages);
     instance.messages.push = function (...args: any[]) {
-      originalPush(...args);
-      setMessages([...instance.messages.slice(-100)]);
-      return args[0];
+      const result = originalPush(...args);
+      if (isMounted) {
+        setMessages([...instance.messages.slice(-100)]);
+      }
+      return result;
     };
-
     setChatInstance(instance);
-
     instance
       .init()
       .then(() => {
-        console.log("[mf] init complete, starting socket...");
-        instance.runSocketConnection();
+        if (isMounted) {
+          console.log("[m-f] init complete, starting socket...");
+          instance.runSocketConnection();
+          setIsConnected(true);
+        }
       })
-      .catch(console.error);
+      .catch((err) => {
+        if (isMounted) console.error(err);
+      });
+
+    return () => {
+      console.log("[m-f] destroying chat instance");
+      isMounted = false;
+      instance.destroy();
+      setChatInstance(null);
+      setIsConnected(false);
+    };
   }, []);
 
   if (!chatInstance) {
     return (
       <div className="app settings-page" style={{ padding: "2rem" }}>
-        <h1>🎮 Twitch Chat Overlay</h1>
-        <p>Примеры использования:</p>
+        <h1>
+          &gt;&gt; mis-fortune 0.7{" "}
+          <img
+            src={misFortuneLogo}
+            style={{
+              height: "60px",
+              borderRadius: "30px",
+              transform: "translateY(20px)",
+            }}
+          ></img>
+        </h1>
+        <p>Браузерный оверлей чата для Twitch с поддержкой 7tv эмоутов</p>
+        <p>Использование: введите никнейм нужного канала в адресную строку</p>
         <div
           style={{
             fontFamily: "monospace",
             background: "#f0f0f0",
             padding: "1rem",
+            width: "fit-content",
           }}
         >
-          <div>/alfedov</div>
-          <div>/xqc?color=00ff00&lifetime=5000</div>
-          <div>/pokimane?fontSize=20&bots=0</div>
+          <a href="/#/livrah">/#/livrah</a>
         </div>
+        <p>Полноценная поддержка параметров запроса будет добавлена позже</p>
       </div>
     );
   }
 
   return (
     <div className="app chat-container">
-      <div className="status">
-        {isConnected ? "🟢 Online" : "🔴 Connecting..."}
-      </div>
       <div className="chat-messages">
         {messages.map((message, index) => (
           <ChatLine
             key={message.id || index}
             message={message}
-            emotes={chatInstance!.emotes} // ← передаем emotes из ChatInstance
           />
         ))}
       </div>

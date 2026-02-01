@@ -1,7 +1,21 @@
-// ChatLine.tsx
 import type { CSSProperties } from "react";
-import type { ChatMessage } from "../primitives/ChatMessage";
-import type { UserPreferences } from "../primitives/UserPreferences";
+import type { ChatMessage } from "../../primitives/ChatMessage";
+import type Emote from "../../primitives/Emote";
+
+type TextToken = {
+  type: "text";
+  text: string;
+};
+
+type EmoteToken = {
+  type: "emote";
+  url: string;
+  code?: string;
+  zeroWidth?: boolean;
+  isTwitch?: boolean;
+};
+
+type ChatToken = TextToken | EmoteToken;
 
 interface ChatLineProps {
   message: ChatMessage;
@@ -13,143 +27,282 @@ export default function ChatLine({ message }: ChatLineProps) {
     displayName,
     color,
     message: text,
+    twitchEmotes,
     thirdPartyEmotes,
     bits,
     cheer,
   } = message;
 
-  const lineStyle: CSSProperties = {
-    fontSize: `20px`,
-    padding: "2px 4px",
-    display: "flex",
-    alignItems: "center",
-  };
+  const fontSize = 16;
+  const badgeSize = 18;
 
   const contentStyle: CSSProperties = {
     display: "inline",
     whiteSpace: "pre-wrap",
     wordBreak: "break-word",
+    color: "#fff",
+    textShadow: "0px 0px 1px #000, 0px 0px 2px #000",
   };
 
-  // === ЗАМЕНА КОДОВ ЭМОДЗИ НА <img> ===
-  const renderTextWithEmotes = () => {
-    // если эмодзи нет — просто текст
-    if (!thirdPartyEmotes.length) {
-      return <span style={contentStyle}>{text}</span>;
+  const parseMessage = (): ChatToken[] => {
+    const chars = text.split("");
+    const filledMask = new Array(chars.length).fill(false);
+
+    const tokens: (EmoteToken | string | null)[] = new Array(chars.length).fill(
+      null,
+    );
+
+    if (twitchEmotes) {
+      twitchEmotes.forEach((emote) => {
+        if (emote.start < 0 || emote.end >= chars.length) return;
+
+        for (let i = emote.start; i <= emote.end; i++) {
+          filledMask[i] = true;
+          tokens[i] = null;
+        }
+
+        tokens[emote.start] = {
+          type: "emote",
+          url: emote.url,
+          code: text.substring(emote.start, emote.end + 1),
+          isTwitch: true,
+          zeroWidth: false,
+        };
+      });
     }
 
-    // строим карту: код → emote
-    const map = new Map<string, (typeof thirdPartyEmotes)[number]["emote"]>();
-    thirdPartyEmotes.forEach(({ code, emote }) => {
-      map.set(code, emote);
-    });
+    const thirdPartyMap = new Map<string, Emote>();
+    thirdPartyEmotes.forEach(({ code, emote }) =>
+      thirdPartyMap.set(code, emote),
+    );
 
-    // Регекс всех кодов в одно выражение: (OMEGALUL|KEKW|...),
-    // \b чтобы не матчить части слов
-    const pattern = Array.from(map.keys())
-      .map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-      .join("|");
-    const re = new RegExp(`\\b(${pattern})\\b`, "g");
+    const finalTokens: ChatToken[] = [];
 
-    const parts: React.ReactNode[] = [];
-    let lastIndex = 0;
-    let match: RegExpExecArray | null;
+    let currentTextBuffer = "";
 
-    while ((match = re.exec(text)) !== null) {
-      // текст до эмодзи
-      if (match.index > lastIndex) {
-        parts.push(
-          <span key={`t-${lastIndex}`} style={contentStyle}>
-            {text.slice(lastIndex, match.index)}
-          </span>,
-        );
+    const flushText = () => {
+      if (!currentTextBuffer) return;
+
+      const words = currentTextBuffer.split(/(\s+)/);
+
+      words.forEach((word) => {
+        if (!word) return;
+
+        const tpEmote = thirdPartyMap.get(word.trim());
+
+        if (tpEmote) {
+          finalTokens.push({
+            type: "emote",
+            url: tpEmote.image,
+            code: word,
+            zeroWidth: tpEmote.zeroWidth,
+          });
+        } else {
+          finalTokens.push({
+            type: "text",
+            text: word,
+          });
+        }
+      });
+
+      currentTextBuffer = "";
+    };
+
+    for (let i = 0; i < chars.length; i++) {
+      if (tokens[i] && typeof tokens[i] === "object") {
+        flushText();
+        finalTokens.push(tokens[i] as EmoteToken);
+      }
+      else if (filledMask[i]) {
+        continue;
+      }
+      else {
+        currentTextBuffer += chars[i];
+      }
+    }
+
+    flushText();
+    return finalTokens;
+  };
+
+  const renderContent = () => {
+    const tokens = parseMessage();
+    const rendered: React.ReactNode[] = [];
+
+    let i = 0;
+    while (i < tokens.length) {
+      const token = tokens[i];
+
+      if (token.type === "text") {
+        if (/^@\w+/.test(token.text)) {
+          rendered.push(
+            <span key={i} className="mention">
+              {token.text}
+            </span>,
+          );
+        } else {
+          rendered.push(
+            <span key={i} style={contentStyle}>
+              {token.text}
+            </span>,
+          );
+        }
+        i++;
+        continue;
       }
 
-      const code = match[1];
-      const emote = map.get(code);
-      if (emote) {
-        parts.push(
+      const baseEmote = token;
+
+      if (baseEmote.zeroWidth) {
+        rendered.push(
           <img
-            key={`e-${match.index}`}
-            src={emote.image}
-            alt={code}
-            title={code}
+            key={i}
+            src={baseEmote.url}
+            alt={baseEmote.code}
+            className="emote"
+            style={{ height: fontSize * 1.5, verticalAlign: "middle" }}
+          />,
+        );
+        i++;
+        continue;
+      }
+
+      const overlays: EmoteToken[] = [];
+      let nextIdx = i + 1;
+
+      while (nextIdx < tokens.length) {
+        const nextToken = tokens[nextIdx];
+
+        if (nextToken.type === "text" && !nextToken.text.trim()) {
+          nextIdx++;
+          continue;
+        }
+
+        if (nextToken.type === "emote" && nextToken.zeroWidth) {
+          overlays.push(nextToken);
+          nextIdx++;
+        } else {
+          break;
+        }
+      }
+
+      if (overlays.length === 0) {
+        rendered.push(
+          <img
+            key={i}
+            src={baseEmote.url}
+            alt={baseEmote.code}
+            className="emote"
             style={{
-              height: 30,
+              height: fontSize * 1.5,
               verticalAlign: "middle",
-              margin: "0 1px",
-              imageRendering: emote.upscale ? "pixelated" : "auto",
+              margin: "0 2px",
             }}
           />,
         );
       } else {
-        // на всякий случай — если в карте нет эмодзи
-        parts.push(
-          <span key={`t-${match.index}`} style={contentStyle}>
-            {code}
+        rendered.push(
+          <span
+            key={i}
+            className="emote-stack"
+            style={{
+              height: fontSize * 1.5,
+              display: "inline-flex",
+              justifyContent: "center",
+              alignItems: "center",
+              position: "relative",
+              verticalAlign: "middle",
+              margin: "0 2px",
+            }}
+          >
+            <img
+              src={baseEmote.url}
+              className="base-emote"
+              style={{
+                height: fontSize * 1.5,
+                width: "auto",
+                display: "block",
+                zIndex: 0,
+              }}
+            />
+
+            {overlays.map((ov, idx) => (
+              <img
+                key={`ov-${idx}`}
+                src={ov.url}
+                className="overlay-emote"
+                style={{
+                  position: "absolute",
+                  height: fontSize * 1.5,
+                  width: "auto",
+                  left: "50%",
+                  top: "50%",
+                  transform: "translate(-50%, -50%)",
+                  zIndex: idx + 1,
+                  pointerEvents: "none",
+                }}
+              />
+            ))}
           </span>,
         );
       }
-
-      lastIndex = match.index + match[0].length;
+      i = nextIdx;
     }
 
-    // хвост строки
-    if (lastIndex < text.length) {
-      parts.push(
-        <span key={`t-end`} style={contentStyle}>
-          {text.slice(lastIndex)}
-        </span>,
-      );
-    }
-
-    return <>{parts}</>;
+    return <>{rendered}</>;
   };
 
   return (
-    <div className="chat-line" style={lineStyle}>
-      {/* бейджи */}
-      {badges.map((b, i) => (
-        <img
-          key={i}
-          src={b.url}
-          alt={b.description}
-          title={b.description}
-          style={{
-            height: 30,
-            marginRight: 2,
-            borderRadius: 2,
-            verticalAlign: "middle",
-          }}
-        />
-      ))}
-
-      {/* ник */}
-      <span
-        style={{
-          fontWeight: 700,
-          color,
-          marginRight: 6,
-        }}
-      >
-        {displayName}
-      </span>
-
-      {/* bits */}
-      {bits && cheer && (
+    <div className="chat-line" style={{ fontSize }}>
+      <div className="chat-meta">
+        {badges.map((b, i) => (
+          <img
+            key={i}
+            src={b.url}
+            alt={b.description}
+            style={{
+              height: badgeSize,
+              marginRight: 4,
+              borderRadius: 2,
+              verticalAlign: "middle",
+            }}
+          />
+        ))}
         <span
           style={{
-            color: cheer.color || "#9146FF",
-            fontWeight: 600,
-            marginRight: 4,
+            fontWeight: 700,
+            color: color || "#a0a0a0",
+            textShadow: "1px 1px 0 #000",
           }}
         >
-          {bits}
+          {displayName}
         </span>
-      )}
+      </div>
 
-      {/* текст + эмодзи */}
-      <span>{renderTextWithEmotes()}</span>
+      <div className="chat-content">
+        {bits && cheer && (
+          <span
+            style={{
+              color: cheer.color || "#9146FF",
+              fontWeight: 800,
+              marginRight: 6,
+            }}
+          >
+            <img
+              src={cheer.image}
+              alt="cheer"
+              style={{
+                height: fontSize,
+                verticalAlign: "middle",
+                marginRight: 2,
+                marginTop: "2px",
+              }}
+            />
+            {bits}
+          </span>
+        )}
+        {renderContent()}
+      </div>
     </div>
   );
 }
