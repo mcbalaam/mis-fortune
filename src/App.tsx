@@ -86,7 +86,7 @@ export function App() {
     return (
       <div className="app settings-page" style={{ padding: "2rem" }}>
         <h1>
-          &gt;&gt; mis-fortune 0.7{" "}
+          &gt;&gt; mis-fortune 0.9{" "}
           <img
             src={misFortuneLogo}
             style={{
@@ -96,8 +96,8 @@ export function App() {
             }}
           ></img>
         </h1>
-        <p>Браузерный оверлей чата для Twitch с поддержкой 7tv эмоутов</p>
-        <p>Использование: введите никнейм нужного канала в адресную строку</p>
+        <p>Browser client-side Twitch chat overlay with 7tv/fz support</p>
+        <p>Usage: paste `/#/` followed by the username in the URL bar</p>
         <div
           style={{
             fontFamily: "monospace",
@@ -107,8 +107,8 @@ export function App() {
           }}
         >
           <a href="/#/livrah">/#/livrah</a>
+          <a href="/#/stariy_bog">/#/livrah</a>
         </div>
-        <p>Полноценная поддержка параметров запроса будет добавлена позже</p>
       </div>
     );
   }
