@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
-import type { ChatMessage } from "../../primitives/ChatMessage";
-import type Emote from "../../primitives/Emote";
+import type { ChatMessage } from "../primitives/ChatMessage";
+import type Emote from "../primitives/Emote";
 
 type TextToken = {
   type: "text";

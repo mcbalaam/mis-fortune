@@ -1,4 +1,3 @@
-import { ofetch } from "ofetch";
 import Emote from "./Emote";
 import type { EmoteReplacement } from "./Emote";
 import type { UserPreferences } from "./UserPreferences";
@@ -7,27 +6,11 @@ import type { CheerInfo } from "./ChatMessage";
 import type { Badge } from "./Badge";
 import Badger from "./Badge";
 import parseIRC from "./IRCMessage";
-
-const BOTUSERNAMES = [
-  "streamelements",
-  "streamlabs",
-  "nightbot",
-  "moobot",
-  "fossabot",
-  "wizebot",
-];
-
-const TWITCH_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko";
-
-interface BitsTier {
-  min_bits: number;
-  images: {
-    dark: {
-      animated: Record<string, string>;
-    };
-  };
-  color?: string;
-}
+import { BOTUSERNAMES, escapeRegExp } from "../modules/constants";
+import { fetchFFZEmotes } from "../modules/ffz";
+import { fetchBTTVEmotes } from "../modules/bttv";
+import { fetchSeventvEmotes } from "../modules/seventv";
+import { getChannelID, fetchTwitchBadges } from "../modules/twitch";
 
 class ChatInstance {
   targetChannelUsername: string;
@@ -43,6 +26,15 @@ class ChatInstance {
 
   private loadingUserBadges: Set<string> = new Set();
   private socket: WebSocket | null = null;
+  private reconnectAttempts = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private lastMessageTime = 0;
+  private destroyed = false;
+  private static readonly RECONNECT_BASE_DELAY_MS = 1000;
+  private static readonly RECONNECT_MAX_DELAY_MS = 30000;
+  private static readonly WATCHDOG_TIMEOUT_MS = 240000;
+  private static readonly WATCHDOG_INTERVAL_MS = 15000;
 
   constructor(channelUsername: string, prefs: UserPreferences) {
     this.prefs = prefs;
@@ -251,205 +243,46 @@ class ChatInstance {
     this.messages = this.messages.filter((msg) => msg.id !== id);
   }
 
-  async getChannelID(username: string): Promise<string | null> {
-    try {
-      const response = await ofetch("https://gql.twitch.tv/gql", {
-        method: "POST",
-        headers: { "Client-Id": TWITCH_CLIENT_ID },
-        body: {
-          query: `query GetChannelID($login: String!) { user(login: $login) { id } }`,
-          variables: { login: username },
-        },
-      });
-      return response.data?.user?.id || null;
-    } catch (e) {
-      return null;
-    }
-  }
-
   async fetchTwitchBadges() {
-    this.write("[m-f]", { color: "#84b574" }, ">> fetching badges...");
+    this.write("Поли", { color: "#84b574" }, "Собираем бейджи...");
 
-    try {
-      const globalData: any = await ofetch(
-        "https://api.ivr.fi/v2/twitch/badges/global",
-      );
+    this.badges = await fetchTwitchBadges(this.targetChannelUsername);
 
-      globalData.forEach((set: any) => {
-        set.versions.forEach((ver: any) => {
-          this.badges[`${set.set_id}:${ver.id}`] = ver.image_url_4x;
-        });
-      });
-
-      if (this.targetChannelUsername) {
-        const channelData: any = await ofetch(
-          `https://api.ivr.fi/v2/twitch/badges/channel?login=${this.targetChannelUsername}`,
-        );
-
-        channelData.forEach((set: any) => {
-          set.versions.forEach((ver: any) => {
-            this.badges[`${set.set_id}:${ver.id}`] = ver.image_url_4x;
-          });
-        });
-      }
-
-      this.write(
-        "[m-f]",
-        { color: "#84b574" },
-        `>> fetched ${Object.keys(this.badges).length} badges`,
-      );
-    } catch (e) {
-      console.warn("[Twitch Badges] IVR fetch failed:", e);
-    }
+    this.write(
+      "Поли",
+      { color: "#84b574" },
+      `Собрали ${Object.keys(this.badges).length} беджей!!`,
+    );
   }
 
   async fetchEmotes() {
     this.emotes = {};
 
-    // 1. FrankerFaceZ
-    const ffzEndpoints = [
-      "emotes/global",
-      `users/twitch/${encodeURIComponent(this.targetChannelUsername)}`,
-    ];
-    for (const endpoint of ffzEndpoints) {
-      try {
-        const res = await ofetch(
-          `https://api.frankerfacez.com/v1/${endpoint}`,
-          { ignoreResponseError: true, timeout: 5000 },
-        );
-        const sets = res.sets || {};
-        Object.values(sets).forEach((set: any) => {
-          set.emoticons.forEach((emoteData: any) => {
-            const imageUrl =
-              emoteData.urls["4"] || emoteData.urls["2"] || emoteData.urls["1"];
-            this.emotes[emoteData.name] = new Emote({
-              id: emoteData.id,
-              image: imageUrl.startsWith("//") ? `https:${imageUrl}` : imageUrl,
-            });
-          });
-        });
-      } catch (error) {
-      }
-    }
+    const [ffzEmotes, bttvEmotes] = await Promise.all([
+      fetchFFZEmotes(this.targetChannelUsername),
+      fetchBTTVEmotes(this.targetChannelUsername),
+    ]);
 
-    // 2. BetterTTV
-    const bttvEndpoints = [
-      "emotes/global",
-      `users/twitch/${encodeURIComponent(this.targetChannelUsername)}`,
-    ];
-    for (const endpoint of bttvEndpoints) {
-      try {
-        const res = await ofetch(
-          `https://api.betterttv.net/3/cached/${endpoint}`,
-          { ignoreResponseError: true, timeout: 5000 },
-        );
-        const emotes = Array.isArray(res)
-          ? res
-          : res.channelEmotes.concat(res.sharedEmotes);
-        emotes.forEach((emoteData: any) => {
-          this.emotes[emoteData.code] = new Emote({
-            id: emoteData.id,
-            image: `https://cdn.betterttv.net/emote/${emoteData.id}/3x`,
-            zeroWidth: [
-              "5e76d338d6581c3724c0f0b2",
-              "5e76d399d6581c3724c0f0b8",
-            ].includes(emoteData.id),
-          });
-        });
-      } catch (error) {
-      }
-    }
+    Object.assign(this.emotes, ffzEmotes, bttvEmotes);
 
-    // 3. 7TV (V3 API)
-    try {
-      const isZeroWidth = (flags: number) =>
-        (flags & 256) !== 0 || (flags & 1) !== 0;
+    this.write("Поли", { color: "#84b574" }, "Собираем эмоуты...");
 
-      this.write("[7tv]", { color: "#ac73ba" }, `>> fetching emotes...`);
+    const seventvEmotes = await fetchSeventvEmotes(this.targetChannelID);
+    Object.assign(this.emotes, seventvEmotes);
 
-      const fetchWithTimeout = (url: string, ms: number) => {
-        const fetchPromise = ofetch(url, { ignoreResponseError: true });
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Timeout")), ms),
-        );
-        return Promise.race([fetchPromise, timeoutPromise]);
-      };
-
-      let globalRes: any = {};
-      try {
-        globalRes = await fetchWithTimeout(
-          "https://7tv.io/v3/emote-sets/global",
-          5000,
-        );
-      } catch (e) {
-        console.warn("[7TV] Global emotes timeout or error");
-      }
-
-      if (globalRes && globalRes.emotes) {
-        globalRes.emotes.forEach((emote: any) => {
-          this.emotes[emote.name] = new Emote({
-            id: emote.id,
-            image: `https://cdn.7tv.app/emote/${emote.id}/4x.webp`,
-            zeroWidth: isZeroWidth(emote.flags),
-          });
-        });
-      }
-
-      if (this.targetChannelID && this.targetChannelID !== "0") {
-        let userRes: any = null;
-        try {
-          userRes = await fetchWithTimeout(
-            `https://7tv.io/v3/users/twitch/${this.targetChannelID}`,
-            5000,
-          );
-        } catch (e) {
-          console.warn("[7TV] Channel emotes timeout or error");
-        }
-
-        if (userRes && userRes.emote_set?.emotes) {
-          userRes.emote_set.emotes.forEach((emote: any) => {
-            const code = emote.name;
-            const data = emote.data || emote;
-
-            this.emotes[code] = new Emote({
-              id: data.id,
-              image: `https://cdn.7tv.app/emote/${data.id}/4x.webp`,
-              zeroWidth:
-                data.flags === 1 ||
-                data.flags === 256 ||
-                emote.flags === 1 ||
-                emote.flags === 256,
-            });
-          });
-
-          const count = userRes.emote_set.emotes.length;
-          console.log(`[7TV] Loaded ${count} emotes`);
-          this.write(
-            "[7tv]",
-            { color: "#ac73ba" },
-            `>> fetched ${count} emotes`,
-          );
-        } else if (!userRes) {
-          this.write(
-            "[7tv]",
-            { color: "#ac73ba" },
-            `>> channel emotes skipped (timeout)`,
-          );
-        }
-      }
-    } catch (err) {
-      console.warn("[7TV] fetch critical error:", err);
-      this.write("[7tv]", { color: "#ac73ba" }, `>> failed to fetch emotes`);
+    const seventvCount = Object.keys(seventvEmotes).length;
+    if (seventvCount > 0) {
+      this.write("Поли", { color: "#84b574" }, `Собрали ${seventvCount} эмоутов!!`);
     }
   }
 
   async init() {
     console.log("[m-f] init() called");
-    this.write("[m-f]", { color: "#84b574" }, ">> mis-fortune 0.7");
-    this.write("[m-f]", { color: "#84b574" }, ">> initializing...");
+    this.write("Поли", { color: "#84b574" }, "mis-fortune 0.9");
+    this.write("Поли", { color: "#84b574" }, "Инициализация...");
 
     try {
-      const id = await this.getChannelID(this.targetChannelUsername);
+      const id = await getChannelID(this.targetChannelUsername);
       if (id) {
         this.targetChannelID = id;
         console.log(`[m-f] Resolved ID: ${id}`);
@@ -470,7 +303,7 @@ class ChatInstance {
       }
 
       console.log("[m-f] init() finished OK");
-      this.write("[m-f]", { color: "#84b574" }, ">> initialization complete");
+      this.write("Поли", { color: "#84b574" }, "Инициализация завершена");
     } catch (e) {
       console.error("[m-f] init() error:", e);
     }
@@ -478,6 +311,12 @@ class ChatInstance {
 
   destroy() {
     console.log("[m-f] Destroying instance...");
+    this.destroyed = true;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.stopWatchdog();
     if (this.socket) {
       this.socket.onclose = null;
       this.socket.onmessage = null;
@@ -488,45 +327,104 @@ class ChatInstance {
     this.messages = [];
   }
 
-  runSocketConnection() {
+  private scheduleReconnect(reason: string) {
+    if (this.destroyed) return;
+    if (this.reconnectTimer !== null) return;
+
+    const delay = Math.min(
+      ChatInstance.RECONNECT_MAX_DELAY_MS,
+      ChatInstance.RECONNECT_BASE_DELAY_MS * 2 ** this.reconnectAttempts,
+    );
+    this.reconnectAttempts++;
+    console.log(
+      `[m-f] ${reason}. Reconnecting in ${delay / 1000}s (attempt ${this.reconnectAttempts})`,
+    );
+    this.write(
+      "Поли",
+      { color: "#84b574" },
+      `Потеряно соединение, переподключение через ${delay / 1000}с...`,
+    );
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connectSocket();
+    }, delay);
+  }
+
+  private stopWatchdog() {
+    if (this.watchdogTimer !== null) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
+  }
+
+  private startWatchdog(socket: WebSocket) {
+    this.stopWatchdog();
+    this.watchdogTimer = setInterval(() => {
+      if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - this.lastMessageTime > ChatInstance.WATCHDOG_TIMEOUT_MS) {
+        console.log("[m-f] watchdog: no data received, forcing reconnect");
+        socket.close();
+      }
+    }, ChatInstance.WATCHDOG_INTERVAL_MS);
+  }
+
+  connectSocket() {
+    if (this.destroyed) return;
     console.log("[m-f] connecting to IRC...");
-    this.write("[m-f]", { color: "#84b574" }, ">> connecting to IRC...");
+    this.write("Поли", { color: "#84b574" }, "Подключаемся...");
 
     if (this.socket) {
+      this.socket.onclose = null;
+      this.socket.onerror = null;
       this.socket.close();
+      this.socket = null;
     }
 
     const socket = new WebSocket("wss://irc-ws.chat.twitch.tv:443", "irc");
     this.socket = socket;
+    this.lastMessageTime = Date.now();
 
     socket.onopen = () => {
       console.log("[m-f] socket connected");
-      this.write("[m-f]", { color: "#84b574" }, ">> socket connected");
+      this.write("Поли", { color: "#84b574" }, "Сокет подключён");
+      this.startWatchdog(socket);
       socket.send("CAP REQ :twitch.tv/tags twitch.tv/commands");
       socket.send("NICK justinfan0");
       socket.send("PASS oauth:");
       socket.send(`JOIN #${this.targetChannelUsername.toLowerCase()}`);
       this.write(
-        "[m-f]",
+        "Поли",
         { color: "#84b574" },
-        `>> joined #${this.targetChannelUsername}`,
+        `Подключено к #${this.targetChannelUsername}`,
       );
-      this.write(
-        "\b",
-        { color: "#ffffff" },
-        "\b",
-      );
+
+      // сбрасываем backoff только если соединение стабильно какое-то время
+      setTimeout(() => {
+        if (this.socket === socket && socket.readyState === WebSocket.OPEN) {
+          this.reconnectAttempts = 0;
+        }
+      }, 15000);
     };
 
-    socket.onclose = () => {
-      console.log("[m-f] socket connection lost");
+    socket.onclose = (event) => {
+      console.log(
+        `[m-f] socket connection lost (code ${event.code}, reason "${event.reason}")`,
+      );
+      if (this.socket === socket) this.socket = null;
+      this.stopWatchdog();
+      this.scheduleReconnect(
+        `connection lost (code ${event.code})`,
+      );
     };
 
     socket.onerror = (error) => {
       console.error("[m-f] WebSocket error:", error);
+      // onclose всегда следует за onerror и запускает реконнект
     };
 
     socket.onmessage = (event: MessageEvent) => {
+      this.lastMessageTime = Date.now();
       (event.data as string).split("\r\n").forEach((line) => {
         if (!line.trim()) return;
 
@@ -624,10 +522,10 @@ class ChatInstance {
       });
     };
   }
-}
 
-function escapeRegExp(string: string): string {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  runSocketConnection() {
+    this.connectSocket();
+  }
 }
 
 export default ChatInstance;

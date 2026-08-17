@@ -1,6 +1,6 @@
 interface IRCMessage {
   raw: string;
-  tags: Record<string, string | true>;
+  tags: Record<string, string>;
   prefix: string | null;
   command: string | null;
   params: string[];
@@ -31,7 +31,7 @@ function parseIRC(data: string): IRCMessage | null {
       const tag = rawTags[i];
       if (!tag) continue;
       const pair = tag.split("=");
-      message.tags[pair[0]!] = pair[1] ?? true;
+      message.tags[pair[0]!] = pair[1] || ""
     }
 
     position = nextspace + 1;
@@ -42,7 +42,6 @@ function parseIRC(data: string): IRCMessage | null {
   }
 
   if (data.charCodeAt(position) === 58) {
-    // ':'
     nextspace = data.indexOf(" ", position);
 
     if (nextspace === -1) {

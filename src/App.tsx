@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import ChatInstance from "./primitives/ChatInstance";
 import { createPreferences } from "./primitives/UserPreferences";
 import type { UserPreferences } from "./primitives/UserPreferences";
-import ChatLine from "./components/ChatLine";
+import ChatLine from "./components/ChatLineSS13";
 import "./index.css";
 import misFortuneLogo from "./mis-fortune.png";
 
@@ -98,17 +98,6 @@ export function App() {
         </h1>
         <p>Browser client-side Twitch chat overlay with 7tv/fz support</p>
         <p>Usage: paste `/#/` followed by the username in the URL bar</p>
-        <div
-          style={{
-            fontFamily: "monospace",
-            background: "#f0f0f0",
-            padding: "1rem",
-            width: "fit-content",
-          }}
-        >
-          <a href="/#/livrah">/#/livrah</a>
-          <a href="/#/stariy_bog">/#/livrah</a>
-        </div>
       </div>
     );
   }
