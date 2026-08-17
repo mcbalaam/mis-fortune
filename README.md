@@ -1,8 +1,8 @@
 # <img style="border-radius: 25px; height: 50px; margin-bottom: -15px;" src="./src/mis-fortune.png"> mis-fortune
 
-A small Twitch chat overlay utility inspired by [jChat](https://github.com/giambaJ/jChat) by [giambaJ](https://github.com/giambaJ), made with Bun and React. Made deployable to GitHub pages too! Currently does not support emote proxying, but that's planned.
+A small SS13-style Twitch chat overlay utility inspired by [jChat](https://github.com/giambaJ/jChat) by [giambaJ](https://github.com/giambaJ), made with Bun and React. Made deployable to GitHub pages too! Currently does not support emote proxying, but that's planned.
 
-<img width="644" height="407" alt="image" src="https://github.com/user-attachments/assets/fc687027-4239-4a93-8cfe-e77f7392a638" />
+<img width="746" height="299" alt="image" src="https://github.com/user-attachments/assets/69cd76f3-d825-4f17-afbb-8b78f007e4be" />
 
 ### To use in browser:
 
