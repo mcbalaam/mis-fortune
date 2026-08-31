@@ -3,6 +3,7 @@ import ChatInstance from "./primitives/ChatInstance";
 import { createPreferences } from "./primitives/UserPreferences";
 import type { UserPreferences } from "./primitives/UserPreferences";
 import ChatLine from "./components/ChatLineSS13";
+import AnnouncementLine from "./components/AnnouncementSS13";
 import "./index.css";
 import misFortuneLogo from "./mis-fortune.png";
 
@@ -105,12 +106,19 @@ export function App() {
   return (
     <div className="app chat-container">
       <div className="chat-messages">
-        {messages.map((message, index) => (
-          <ChatLine
-            key={message.id || index}
-            message={message}
-          />
-        ))}
+        {messages.map((message, index) =>
+          message.kind === "announcement" ? (
+            <AnnouncementLine
+              key={message.id || index}
+              message={message}
+            />
+          ) : (
+            <ChatLine
+              key={message.id || index}
+              message={message}
+            />
+          ),
+        )}
       </div>
     </div>
   );

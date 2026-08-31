@@ -1,6 +1,8 @@
 import type { Badge } from "./Badge";
 import type { EmoteReplacement } from "./Emote";
 
+export type MessageKind = "chat" | "notice" | "announcement";
+
 export class ChatMessage {
   id: string;
   username: string;
@@ -15,6 +17,9 @@ export class ChatMessage {
   cheer?: CheerInfo;
   isAction: boolean;
   bits?: number;
+  kind: MessageKind;
+  customRewardId?: string;
+  noticeColor?: string;
 
   constructor(data: {
     id: string;
@@ -30,6 +35,9 @@ export class ChatMessage {
     cheer?: CheerInfo;
     isAction: boolean;
     bits?: number;
+    kind?: MessageKind;
+    customRewardId?: string;
+    noticeColor?: string;
   }) {
     this.id = data.id;
     this.username = data.username;
@@ -44,6 +52,9 @@ export class ChatMessage {
     this.cheer = data.cheer;
     this.isAction = data.isAction;
     this.bits = data.bits;
+    this.kind = data.kind || "chat";
+    this.customRewardId = data.customRewardId;
+    this.noticeColor = data.noticeColor;
   }
 }
 

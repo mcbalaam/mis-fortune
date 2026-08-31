@@ -15,7 +15,7 @@ type EmoteToken = {
   isTwitch?: boolean;
 };
 
-type ChatToken = TextToken | EmoteToken;
+export type ChatToken = TextToken | EmoteToken;
 
 interface ChatLineSS13Props {
   message: ChatMessage;
@@ -95,7 +95,7 @@ const BOT_VERBS: Record<string, string> = {
   "?": "запрашивает",
 };
 
-function parseMessage(text: string, twitchEmotes: any[], thirdPartyEmotes: any[]): ChatToken[] {
+export function parseMessage(text: string, twitchEmotes: any[], thirdPartyEmotes: any[]): ChatToken[] {
   const chars = text.split("");
   const filledMask = new Array(chars.length).fill(false);
   const tokens: (EmoteToken | string | null)[] = new Array(chars.length).fill(null);
@@ -153,6 +153,72 @@ function parseMessage(text: string, twitchEmotes: any[], thirdPartyEmotes: any[]
   return finalTokens;
 }
 
+export function renderChatTokens(
+  tokens: ChatToken[],
+  baseFontSize: number,
+): React.ReactNode[] {
+  const rendered: React.ReactNode[] = [];
+  let i = 0;
+
+  while (i < tokens.length) {
+    const token = tokens[i];
+
+    if (token.type === "text") {
+      if (/^@\w+/.test(token.text)) {
+        rendered.push(<span key={i} className="mention">{token.text}</span>);
+      } else {
+        rendered.push(<span key={i}>{token.text}</span>);
+      }
+      i++;
+      continue;
+    }
+
+    const baseEmote = token;
+
+    if (baseEmote.zeroWidth) {
+      rendered.push(
+        <img key={i} src={baseEmote.url} alt={baseEmote.code} style={{ height: baseFontSize * 1.4, verticalAlign: "middle" }} />,
+      );
+      i++;
+      continue;
+    }
+
+    const overlays: EmoteToken[] = [];
+    let nextIdx = i + 1;
+    while (nextIdx < tokens.length) {
+      const nextToken = tokens[nextIdx];
+      if (nextToken.type === "text" && !nextToken.text.trim()) {
+        nextIdx++;
+        continue;
+      }
+      if (nextToken.type === "emote" && nextToken.zeroWidth) {
+        overlays.push(nextToken);
+        nextIdx++;
+      } else {
+        break;
+      }
+    }
+
+    if (overlays.length === 0) {
+      rendered.push(
+        <img key={i} src={baseEmote.url} alt={baseEmote.code} style={{ height: baseFontSize * 1.4, verticalAlign: "middle", margin: "0 2px" }} />,
+      );
+    } else {
+      rendered.push(
+        <span key={i} className="emote-stack" style={{ height: baseFontSize * 1.4, display: "inline-flex", justifyContent: "center", alignItems: "center", position: "relative", verticalAlign: "middle", margin: "0 2px" }}>
+          <img src={baseEmote.url} className="base-emote" style={{ height: baseFontSize * 1.4, width: "auto", display: "block", zIndex: 0 }} />
+          {overlays.map((ov, idx) => (
+            <img key={`ov-${idx}`} src={ov.url} className="overlay-emote" style={{ position: "absolute", height: baseFontSize * 1.4, width: "auto", left: "50%", top: "50%", transform: "translate(-50%, -50%)", zIndex: idx + 1, pointerEvents: "none" }} />
+          ))}
+        </span>,
+      );
+    }
+    i = nextIdx;
+  }
+
+  return rendered;
+}
+
 export default function ChatLineSS13({ message, alignBadges = true, animate = true }: ChatLineSS13Props) {
   const {
     badges,
@@ -165,6 +231,8 @@ export default function ChatLineSS13({ message, alignBadges = true, animate = tr
     cheer,
     username,
     isAction,
+    kind,
+    customRewardId,
   } = message;
 
   const tag = getTagInfo(message);
@@ -173,14 +241,15 @@ export default function ChatLineSS13({ message, alignBadges = true, animate = tr
   const verbs = isBot ? BOT_VERBS : NORMAL_VERBS;
   const verb = verbs[suffix] || verbs[""];
 
-  const baseFontSize = tag.isCommand ? 25 : 18;
-  const badgeSize = tag.isCommand ? 20 : 16;
+  const isHighlighted = kind === "notice" || !!customRewardId;
+  const baseFontSize = isHighlighted ? 25 : tag.isCommand ? 25 : 18;
+  const badgeSize = isHighlighted ? 20 : tag.isCommand ? 20 : 16;
 
   const lineColor = isAction ? "#ffffff" : tag.color;
 
   const lineStyle: CSSProperties = {
     fontSize: baseFontSize,
-    fontWeight: tag.isCommand ? 900 : isEmphatic ? 700 : 400,
+    fontWeight: isHighlighted ? 800 : tag.isCommand ? 900 : isEmphatic ? 700 : 400,
     lineHeight: 1.4,
     color: lineColor,
     textShadow: "0px 0px 2px #000, 0px 0px 4px #000",
@@ -222,68 +291,7 @@ export default function ChatLineSS13({ message, alignBadges = true, animate = tr
 
   const tokens = parseMessage(text, twitchEmotes, thirdPartyEmotes);
 
-  const renderTokens = () => {
-    const rendered: React.ReactNode[] = [];
-    let i = 0;
-
-    while (i < tokens.length) {
-      const token = tokens[i];
-
-      if (token.type === "text") {
-        if (/^@\w+/.test(token.text)) {
-          rendered.push(<span key={i} className="mention">{token.text}</span>);
-        } else {
-          rendered.push(<span key={i}>{token.text}</span>);
-        }
-        i++;
-        continue;
-      }
-
-      const baseEmote = token;
-
-      if (baseEmote.zeroWidth) {
-        rendered.push(
-          <img key={i} src={baseEmote.url} alt={baseEmote.code} style={{ height: baseFontSize * 1.4, verticalAlign: "middle" }} />,
-        );
-        i++;
-        continue;
-      }
-
-      const overlays: EmoteToken[] = [];
-      let nextIdx = i + 1;
-      while (nextIdx < tokens.length) {
-        const nextToken = tokens[nextIdx];
-        if (nextToken.type === "text" && !nextToken.text.trim()) {
-          nextIdx++;
-          continue;
-        }
-        if (nextToken.type === "emote" && nextToken.zeroWidth) {
-          overlays.push(nextToken);
-          nextIdx++;
-        } else {
-          break;
-        }
-      }
-
-      if (overlays.length === 0) {
-        rendered.push(
-          <img key={i} src={baseEmote.url} alt={baseEmote.code} style={{ height: baseFontSize * 1.4, verticalAlign: "middle", margin: "0 2px" }} />,
-        );
-      } else {
-        rendered.push(
-          <span key={i} className="emote-stack" style={{ height: baseFontSize * 1.4, display: "inline-flex", justifyContent: "center", alignItems: "center", position: "relative", verticalAlign: "middle", margin: "0 2px" }}>
-            <img src={baseEmote.url} className="base-emote" style={{ height: baseFontSize * 1.4, width: "auto", display: "block", zIndex: 0 }} />
-            {overlays.map((ov, idx) => (
-              <img key={`ov-${idx}`} src={ov.url} className="overlay-emote" style={{ position: "absolute", height: baseFontSize * 1.4, width: "auto", left: "50%", top: "50%", transform: "translate(-50%, -50%)", zIndex: idx + 1, pointerEvents: "none" }} />
-            ))}
-          </span>,
-        );
-      }
-      i = nextIdx;
-    }
-
-    return <>{rendered}</>;
-  };
+  const renderTokens = () => renderChatTokens(tokens, baseFontSize);
 
   return (
     <div style={lineStyle}>

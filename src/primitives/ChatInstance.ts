@@ -3,6 +3,7 @@ import type { EmoteReplacement } from "./Emote";
 import type { UserPreferences } from "./UserPreferences";
 import { ChatMessage } from "./ChatMessage";
 import type { CheerInfo } from "./ChatMessage";
+import type { MessageKind } from "./ChatMessage";
 import type { Badge } from "./Badge";
 import Badger from "./Badge";
 import parseIRC from "./IRCMessage";
@@ -68,7 +69,21 @@ class ChatInstance {
     return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
   }
 
-  write(username: string, info: any, message: string): void {
+  private unescapeTagValue(value: string): string {
+    return value
+      .replace(/\\s/g, " ")
+      .replace(/\\r/g, "\r")
+      .replace(/\\n/g, "\n")
+      .replace(/\\:/g, ";")
+      .replace(/\\\\/g, "\\");
+  }
+
+  write(
+    username: string,
+    info: any,
+    message: string,
+    opts?: { kind?: MessageKind; noticeColor?: string },
+  ): void {
     if (
       BOTUSERNAMES.includes(username.toLowerCase()) &&
       this.blockedUsers.includes(username.toLowerCase())
@@ -228,6 +243,12 @@ class ChatInstance {
       cheer,
       isAction,
       bits,
+      kind: opts?.kind || "chat",
+      customRewardId:
+        typeof info["custom-reward-id"] === "string"
+          ? info["custom-reward-id"]
+          : undefined,
+      noticeColor: opts?.noticeColor,
     });
 
     this.messages.push(chatMessage);
@@ -462,6 +483,35 @@ class ChatInstance {
           case "CLEARCHAT":
             if (message.params[1]) this.clearChat(message.params[1]);
             return;
+
+          case "USERNOTICE": {
+            const tags = message.tags || {};
+            const msgId = tags["msg-id"];
+            const login = tags.login || "";
+            const body = message.params[1] || "";
+
+            if (msgId === "announcement") {
+              const text =
+                body ||
+                (tags["system-msg"]
+                  ? this.unescapeTagValue(tags["system-msg"])
+                  : "");
+              if (!text) return;
+              this.write(login, tags, text, {
+                kind: "announcement",
+                noticeColor: tags["msg-param-color"],
+              });
+            } else if (
+              msgId === "sub" ||
+              msgId === "resub" ||
+              msgId === "submilestone"
+            ) {
+              // скрываем голые системки resub без текста пользователя
+              if (!body) return;
+              this.write(login, tags, body, { kind: "notice" });
+            }
+            return;
+          }
 
           case "PRIVMSG":
             if (
