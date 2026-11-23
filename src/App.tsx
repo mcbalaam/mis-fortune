@@ -1,33 +1,32 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import ChatInstance from "./primitives/ChatInstance";
 import { createPreferences } from "./primitives/UserPreferences";
-import type { UserPreferences } from "./primitives/UserPreferences";
 import ChatLine from "./components/ChatLineSS13";
+import type { ChatMessage } from "./primitives/ChatMessage";
 import "./index.css";
 import misFortuneLogo from "./mis-fortune.png";
 
+function subscribeToHash(onHashChange: () => void) {
+  window.addEventListener("hashchange", onHashChange);
+  return () => window.removeEventListener("hashchange", onHashChange);
+}
+
 export function App() {
-  const [chatInstance, setChatInstance] = useState<ChatInstance | null>(null);
-  const [messages, setMessages] = useState<any[]>([]);
-  const [isConnected, setIsConnected] = useState(false);
+  const hash = useSyncExternalStore(subscribeToHash, () => window.location.hash);
+  return <ChatRoute key={hash} hash={hash} />;
+}
+
+function ChatRoute({ hash }: { hash: string }) {
+  const [channel, hashQuery] = hash.replace(/^#\/?/, "").split("?", 2);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
 
   useEffect(() => {
-    const rawHash = window.location.hash.replace(/^#\/?/, "");
-    if (!rawHash) return;
-
-    const channel = rawHash.split(/[?]/)[0];
     if (!channel) return;
 
-    const urlObj = new URL(window.location.href);
-    const searchParams = urlObj.searchParams;
-
-    if (rawHash.includes("?")) {
-      const hashQuery = rawHash.split("?")[1];
-      const hashParams = new URLSearchParams(hashQuery);
-      hashParams.forEach((val, key) => {
-        searchParams.set(key, val);
-      });
-    }
+    const searchParams = new URLSearchParams(window.location.search);
+    new URLSearchParams(hashQuery).forEach((value, key) => {
+      searchParams.set(key, value);
+    });
 
     const prefs = createPreferences({
       fontSizePx: searchParams.get("fontSize")
@@ -52,21 +51,19 @@ export function App() {
     let isMounted = true;
     const instance = new ChatInstance(channel, prefs);
     const originalPush = instance.messages.push.bind(instance.messages);
-    instance.messages.push = function (...args: any[]) {
+    instance.messages.push = function (...args) {
       const result = originalPush(...args);
       if (isMounted) {
-        setMessages([...instance.messages.slice(-100)]);
+        setMessages(instance.messages.slice(-100));
       }
       return result;
     };
-    setChatInstance(instance);
     instance
       .init()
       .then(() => {
         if (isMounted) {
           console.log("[m-f] init complete, starting socket...");
           instance.runSocketConnection();
-          setIsConnected(true);
         }
       })
       .catch((err) => {
@@ -77,12 +74,10 @@ export function App() {
       console.log("[m-f] destroying chat instance");
       isMounted = false;
       instance.destroy();
-      setChatInstance(null);
-      setIsConnected(false);
     };
-  }, []);
+  }, [channel, hashQuery]);
 
-  if (!chatInstance) {
+  if (!channel) {
     return (
       <div className="app settings-page" style={{ padding: "2rem" }}>
         <h1>
