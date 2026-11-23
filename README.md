@@ -6,7 +6,7 @@ A small SS13-style Twitch chat overlay utility inspired by [jChat](https://githu
 
 ### To use in browser:
 
-Navigate to http://mf.realrobust.space/#/your-channel-name-here. That's it!
+Navigate to http://mis.mcblm.xyz/#/your-channel-name-here. That's it!
 
 ### To tinker or run locally:
 
