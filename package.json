@@ -13,12 +13,12 @@
   "dependencies": {
     "gh-pages": "^6.3.0",
     "ofetch": "^1.5.1",
-    "react": "^19",
-    "react-dom": "^19"
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@types/bun": "latest"
   }
 }
