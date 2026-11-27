@@ -1,8 +1,18 @@
-import { ofetch } from "ofetch";
+import type { FetchMetadata } from "./metadata";
 import Emote from "../primitives/Emote";
+
+interface BttvEmote {
+  id: string;
+  code: string;
+}
+
+type BttvResponse =
+  | BttvEmote[]
+  | { channelEmotes: BttvEmote[]; sharedEmotes: BttvEmote[] };
 
 export async function fetchBTTVEmotes(
   channelUsername: string,
+  fetchMetadata: FetchMetadata,
 ): Promise<Record<string, Emote>> {
   const emotes: Record<string, Emote> = {};
   const bttvEndpoints = [
@@ -12,14 +22,15 @@ export async function fetchBTTVEmotes(
 
   for (const endpoint of bttvEndpoints) {
     try {
-      const res = await ofetch(
-        `https://api.betterttv.net/3/cached/${endpoint}`,
+      const res = await fetchMetadata<BttvResponse>(
+        "bttv",
+        `/3/cached/${endpoint}`,
         { ignoreResponseError: true, timeout: 5000 },
       );
       const emoteList = Array.isArray(res)
         ? res
         : res.channelEmotes.concat(res.sharedEmotes);
-      emoteList.forEach((emoteData: any) => {
+      emoteList.forEach((emoteData) => {
         emotes[emoteData.code] = new Emote({
           id: emoteData.id,
           image: `https://cdn.betterttv.net/emote/${emoteData.id}/3x`,

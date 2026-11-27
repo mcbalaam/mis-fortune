@@ -17,7 +17,10 @@ export function App() {
 }
 
 function ChatRoute({ hash }: { hash: string }) {
-  const [channel, hashQuery] = hash.replace(/^#\/?/, "").split("?", 2);
+  const [route = "", hashQuery] = hash.replace(/^#\/?/, "").split("?", 2);
+  const proxySuffix = "/#/proxy";
+  const useProxy = route.endsWith(proxySuffix);
+  const channel = useProxy ? route.slice(0, -proxySuffix.length) : route;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
 
   useEffect(() => {
@@ -49,7 +52,7 @@ function ChatRoute({ hash }: { hash: string }) {
     });
 
     let isMounted = true;
-    const instance = new ChatInstance(channel, prefs);
+    const instance = new ChatInstance(channel, prefs, useProxy);
     const originalPush = instance.messages.push.bind(instance.messages);
     instance.messages.push = function (...args) {
       const result = originalPush(...args);
@@ -75,13 +78,13 @@ function ChatRoute({ hash }: { hash: string }) {
       isMounted = false;
       instance.destroy();
     };
-  }, [channel, hashQuery]);
+  }, [channel, hashQuery, useProxy]);
 
   if (!channel) {
     return (
       <div className="app settings-page" style={{ padding: "2rem" }}>
         <h1>
-          &gt;&gt; mis-fortune 0.9{" "}
+          &gt;&gt; mis-fortune 0.9.2{" "}
           <img
             src={misFortuneLogo}
             style={{

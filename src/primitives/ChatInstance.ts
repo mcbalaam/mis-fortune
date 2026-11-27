@@ -11,6 +11,7 @@ import { fetchFFZEmotes } from "../modules/ffz";
 import { fetchBTTVEmotes } from "../modules/bttv";
 import { fetchSeventvEmotes } from "../modules/seventv";
 import { getChannelID, fetchTwitchBadges } from "../modules/twitch";
+import { createMetadataFetch, type FetchMetadata } from "../modules/metadata";
 
 class ChatInstance {
   targetChannelUsername: string;
@@ -25,6 +26,7 @@ class ChatInstance {
   badges: Record<string, string> = {};
 
   private loadingUserBadges: Set<string> = new Set();
+  private readonly fetchMetadata: FetchMetadata;
   private socket: WebSocket | null = null;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -36,10 +38,19 @@ class ChatInstance {
   private static readonly WATCHDOG_TIMEOUT_MS = 240000;
   private static readonly WATCHDOG_INTERVAL_MS = 15000;
 
-  constructor(channelUsername: string, prefs: UserPreferences) {
+  constructor(channelUsername: string, prefs: UserPreferences, useProxy: boolean) {
     this.prefs = prefs;
     this.targetChannelUsername = channelUsername;
-    this.badger = new Badger();
+    this.fetchMetadata = createMetadataFetch(useProxy, () => {
+      if (!this.destroyed) {
+        this.write(
+          "Поли",
+          { color: "#84b574" },
+          "Прокси бейджей и эмоутов недоступен.",
+        );
+      }
+    });
+    this.badger = new Badger(this.fetchMetadata);
   }
 
   private isColorDark(hex: string): boolean {
@@ -246,7 +257,10 @@ class ChatInstance {
   async fetchTwitchBadges() {
     this.write("Поли", { color: "#84b574" }, "Собираем бейджи...");
 
-    this.badges = await fetchTwitchBadges(this.targetChannelUsername);
+    this.badges = await fetchTwitchBadges(
+      this.targetChannelUsername,
+      this.fetchMetadata,
+    );
 
     this.write(
       "Поли",
@@ -259,15 +273,18 @@ class ChatInstance {
     this.emotes = {};
 
     const [ffzEmotes, bttvEmotes] = await Promise.all([
-      fetchFFZEmotes(this.targetChannelUsername),
-      fetchBTTVEmotes(this.targetChannelUsername),
+      fetchFFZEmotes(this.targetChannelUsername, this.fetchMetadata),
+      fetchBTTVEmotes(this.targetChannelUsername, this.fetchMetadata),
     ]);
 
     Object.assign(this.emotes, ffzEmotes, bttvEmotes);
 
     this.write("Поли", { color: "#84b574" }, "Собираем эмоуты...");
 
-    const seventvEmotes = await fetchSeventvEmotes(this.targetChannelID);
+    const seventvEmotes = await fetchSeventvEmotes(
+      this.targetChannelID,
+      this.fetchMetadata,
+    );
     Object.assign(this.emotes, seventvEmotes);
 
     const seventvCount = Object.keys(seventvEmotes).length;
@@ -278,7 +295,7 @@ class ChatInstance {
 
   async init() {
     console.log("[m-f] init() called");
-    this.write("Поли", { color: "#84b574" }, "mis-fortune 0.9");
+    this.write("Поли", { color: "#84b574" }, "mis-fortune 0.9.2");
     this.write("Поли", { color: "#84b574" }, "Инициализация...");
 
     try {

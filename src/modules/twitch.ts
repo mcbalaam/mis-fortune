@@ -1,6 +1,12 @@
 import { ofetch } from "ofetch";
+import type { FetchMetadata } from "./metadata";
 
 const TWITCH_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko";
+
+interface TwitchBadgeSet {
+  set_id: string;
+  versions: { id: string; image_url_4x: string }[];
+}
 
 export async function getChannelID(
   username: string,
@@ -22,27 +28,30 @@ export async function getChannelID(
 
 export async function fetchTwitchBadges(
   channelUsername: string,
+  fetchMetadata: FetchMetadata,
 ): Promise<Record<string, string>> {
   const badges: Record<string, string> = {};
 
   try {
-    const globalData: any = await ofetch(
-      "https://api.ivr.fi/v2/twitch/badges/global",
+    const globalData = await fetchMetadata<TwitchBadgeSet[]>(
+      "ivr",
+      "/v2/twitch/badges/global",
     );
 
-    globalData.forEach((set: any) => {
-      set.versions.forEach((ver: any) => {
+    globalData.forEach((set) => {
+      set.versions.forEach((ver) => {
         badges[`${set.set_id}:${ver.id}`] = ver.image_url_4x;
       });
     });
 
     if (channelUsername) {
-      const channelData: any = await ofetch(
-        `https://api.ivr.fi/v2/twitch/badges/channel?login=${channelUsername}`,
+      const channelData = await fetchMetadata<TwitchBadgeSet[]>(
+        "ivr",
+        `/v2/twitch/badges/channel?login=${encodeURIComponent(channelUsername)}`,
       );
 
-      channelData.forEach((set: any) => {
-        set.versions.forEach((ver: any) => {
+      channelData.forEach((set) => {
+        set.versions.forEach((ver) => {
           badges[`${set.set_id}:${ver.id}`] = ver.image_url_4x;
         });
       });

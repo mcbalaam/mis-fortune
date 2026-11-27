@@ -1,4 +1,4 @@
-import { ofetch } from "ofetch";
+import type { FetchMetadata } from "../modules/metadata";
 
 export interface Badge {
   description: string;
@@ -41,6 +41,9 @@ export interface ChatterinoBadge {
   users: string[];
 }
 
+type SeventvStyle = { badge?: { id: string; tooltip?: string } };
+type SeventvBadgeResponse = { user?: { style?: SeventvStyle }; style?: SeventvStyle };
+
 /// инстанс бэйджера (баджера, барсука то бишь). фетчит бейджи, кеширует их, отдаёт по запросу
 export default class Badger {
   // кэш всех бейджей пользователей
@@ -55,6 +58,8 @@ export default class Badger {
 
   // флаги загрузки
   private loadingUsers: Set<string> = new Set();
+
+  constructor(private readonly fetchMetadata: FetchMetadata) {}
 
   async loadGlobalBadges(): Promise<void> {
     try {
@@ -136,8 +141,9 @@ export default class Badger {
 
   private async loadFFZBadges(username: string): Promise<Badge[]> {
     try {
-      const res: FFZUserBadges = await ofetch(
-        `https://api.frankerfacez.com/v1/user/${username}`,
+      const res = await this.fetchMetadata<FFZUserBadges>(
+        "ffz",
+        `/v1/user/${encodeURIComponent(username)}`,
         { ignoreResponseError: true, timeout: 5000 },
       );
 
@@ -195,10 +201,11 @@ export default class Badger {
 
   private async loadSeventvBadge(userId: string): Promise<Badge | null> {
     try {
-      const data = await ofetch(`https://7tv.io/v3/users/twitch/${userId}`, {
-        ignoreResponseError: true,
-        timeout: 5000,
-      });
+      const data = await this.fetchMetadata<SeventvBadgeResponse>(
+        "7tv",
+        `/v3/users/twitch/${userId}`,
+        { ignoreResponseError: true, timeout: 5000 },
+      );
 
       const badge = data.user?.style?.badge || data.style?.badge;
 
@@ -244,10 +251,12 @@ export default class Badger {
 
   private async fetchChatterinoBadges(): Promise<ChatterinoBadge[]> {
     try {
-      const res = await ofetch("https://api.chatterino.com/badges", {
-        timeout: 5000,
-      });
-      return res.badges || res;
+      const res = await this.fetchMetadata<ChatterinoBadge[] | { badges: ChatterinoBadge[] }>(
+        "chatterino",
+        "/badges",
+        { timeout: 5000 },
+      );
+      return Array.isArray(res) ? res : res.badges;
     } catch (error) {
       return [];
     }
@@ -255,7 +264,7 @@ export default class Badger {
 
   private async fetchFfzapBadges(): Promise<FfzapUser[]> {
     try {
-      return await ofetch("https://api.ffzap.com/v1/supporters", {
+      return await this.fetchMetadata<FfzapUser[]>("ffzap", "/v1/supporters", {
         timeout: 5000,
       });
     } catch (error) {
@@ -265,10 +274,11 @@ export default class Badger {
 
   private async fetchBttvBadges(): Promise<BTTVBadgeUser[]> {
     try {
-      return await ofetch("https://api.betterttv.net/3/cached/badges", {
-        ignoreResponseError: true,
-        timeout: 5000,
-      });
+      return await this.fetchMetadata<BTTVBadgeUser[]>(
+        "bttv",
+        "/3/cached/badges",
+        { timeout: 5000 },
+      );
     } catch (error) {
       return [];
     }

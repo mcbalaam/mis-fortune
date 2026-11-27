@@ -8,11 +8,11 @@ COPY bunfig.toml ./
 COPY src ./src
 RUN bun build --target=bun --production --outdir=dist ./src/index.ts
 
-FROM oven/bun:1.4.5-slim
+FROM oven/bun:1.4.5-distroless
 WORKDIR /app/dist
 ENV NODE_ENV=production
 COPY --from=build /app/dist ./
 
-USER bun
+USER 65532:65532
 EXPOSE 3000
-CMD ["bun", "./index.js"]
+CMD ["./index.js"]

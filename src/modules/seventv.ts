@@ -1,28 +1,20 @@
-import { ofetch } from "ofetch";
+import type { FetchMetadata } from "./metadata";
 import Emote from "../primitives/Emote";
 
 const isZeroWidth = (flags: number) =>
   (flags & 256) !== 0 || (flags & 1) !== 0;
 
-const fetchWithTimeout = (url: string, ms: number) => {
-  const fetchPromise = ofetch(url, { ignoreResponseError: true });
-  const timeoutPromise = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error("Timeout")), ms),
-  );
-  return Promise.race([fetchPromise, timeoutPromise]);
-};
+const fetchOptions = { ignoreResponseError: true, timeout: 5000 };
 
 export async function fetchSeventvEmotes(
   channelID: string,
+  fetchMetadata: FetchMetadata,
 ): Promise<Record<string, Emote>> {
   const emotes: Record<string, Emote> = {};
 
   let globalRes: any = {};
   try {
-    globalRes = await fetchWithTimeout(
-      "https://7tv.io/v3/emote-sets/global",
-      5000,
-    );
+    globalRes = await fetchMetadata("7tv", "/v3/emote-sets/global", fetchOptions);
   } catch (e) {
     console.warn("[7TV] Global emotes timeout or error");
   }
@@ -40,9 +32,10 @@ export async function fetchSeventvEmotes(
   if (channelID && channelID !== "0") {
     let userRes: any = null;
     try {
-      userRes = await fetchWithTimeout(
-        `https://7tv.io/v3/users/twitch/${channelID}`,
-        5000,
+      userRes = await fetchMetadata(
+        "7tv",
+        `/v3/users/twitch/${channelID}`,
+        fetchOptions,
       );
     } catch (e) {
       console.warn("[7TV] Channel emotes timeout or error");

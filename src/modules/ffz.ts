@@ -1,8 +1,9 @@
-import { ofetch } from "ofetch";
+import type { FetchMetadata } from "./metadata";
 import Emote from "../primitives/Emote";
 
 export async function fetchFFZEmotes(
   channelUsername: string,
+  fetchMetadata: FetchMetadata,
 ): Promise<Record<string, Emote>> {
   const emotes: Record<string, Emote> = {};
   const ffzEndpoints = [
@@ -12,8 +13,9 @@ export async function fetchFFZEmotes(
 
   for (const endpoint of ffzEndpoints) {
     try {
-      const res = await ofetch(
-        `https://api.frankerfacez.com/v1/${endpoint}`,
+      const res = await fetchMetadata<{ sets?: Record<string, unknown> }>(
+        "ffz",
+        `/v1/${endpoint}`,
         { ignoreResponseError: true, timeout: 5000 },
       );
       const sets = res.sets || {};
